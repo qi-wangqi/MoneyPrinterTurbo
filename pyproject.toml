@@ -77,3 +77,9 @@ packages = ["app"]
 [tool.uv]
 # 当前项目以应用运行形态为主，不作为可发布的 Python 包安装。
 package = false
+
+# onnxruntime >=1.21 不再发布 macOS x86_64 (Intel) wheel，
+# 1.20.1 是最后提供 universal2 wheel 的版本，保证 Intel Mac 可安装。
+override-dependencies = [
+    "onnxruntime==1.20.1",
+]
