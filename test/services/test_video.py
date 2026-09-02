@@ -1292,5 +1292,18 @@ class TestMaterialResolutionTolerance(unittest.TestCase):
         self.assertFalse(vd.is_material_resolution_acceptable(320, 240))
 
 
+class TestSubtitleFontFallback(unittest.TestCase):
+    def test_falls_back_to_cjk_font_when_selected_font_cannot_render(self):
+        base_path = os.path.join(utils.font_dir(), "BeVietnamPro-Bold.ttf")
+        sample = "将进酒：君不见黄河之水"
+        resolved = vd.resolve_subtitle_font_path("BeVietnamPro-Bold.ttf", sample)
+        self.assertNotEqual(resolved, base_path)
+        self.assertTrue(vd.subtitle_font_supports_text(resolved, sample))
+
+    def test_keeps_font_that_supports_the_text(self):
+        resolved = vd.resolve_subtitle_font_path("STHeitiMedium.ttc", "将进酒")
+        self.assertTrue(resolved.endswith("STHeitiMedium.ttc"))
+
+
 if __name__ == "__main__":
     unittest.main()

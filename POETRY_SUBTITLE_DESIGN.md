@@ -1816,3 +1816,78 @@ SRT 继续作为唯一时间轴来源。
 ```
 
 这样可以在不破坏现有链路的情况下，实现“视频一开始显示诗名和作者，朗读时逐行展开唐诗”的效果。
+
+## 25. 最新代码集成复核
+
+按当前分支真实代码复核后，方案继续成立，但落地细节做以下修正：
+
+1. `voice.create_subtitle()` 增加一个 `segmentation` 参数，默认仍是 `"punctuation"`；唐诗模式传入 `"line"`，内部继续复用现有 Edge cues 和 legacy `subs/offset` 两条聚合路径。
+2. `subtitle.correct()` 同步增加 `segmentation` 参数，Whisper 上传音频的唐诗模式按物理行校正。
+3. `custom_audio_file` 且 `sub_maker is None` 时，只有显式选择 Whisper 才能生成唐诗字幕；否则必须在 `subtitle` 阶段明确失败，不能静默输出无字幕视频。
+4. 渲染层的常驻结束时间使用 `voice_source_clip.duration`，而不是任务层向上取整后的 `audio_duration`，避免最后一行字幕比真实音频提前消失。
+5. 渲染前必须校验 SRT cue 数量和目标物理行数量一致，并尽量校验文本顺序；不一致时任务失败，避免诗行错位。
+6. 最新 main 新增的 `video_fit_mode`、CORS 保护和 Windows 文件名修复与唐诗渲染不冲突；渲染器仍只在最终视频叠加图层，不进入素材裁剪逻辑。
+7. WebUI 历史任务、设置预设导出导入、运行时 UI 配置都通过现有 `_apply_restored_params()`、`VideoParams.model_dump()` 和 `_set_runtime_config()` 补充新字段。
+8. MoviePy 的 `with_position(callable)` 回调时间从图层自身开始计算。滑动位置函数必须绑定图层 `start`，先换算成视频绝对时间，再匹配 SRT/滑动状态时间。
+9. 每个正文图层的退出时间需要遍历其后续滑动状态，并按该图层方向判断完全离开内容区的时间；单行拆出的多个续列/续行可以独立提前离场。
+
+## 26. 当前实现架构复核：三层 viewport
+
+最新实现已不再为每句正文创建一个 `ImageClip`，避免长诗产生大量重叠 MoviePy 图层，也让滑动和视窗裁剪在同一个坐标系内完成。
+
+### 26.1 图层结构
+
+```text
+底层：素材视频
+第 1 层：诗名 title_clip（ImageClip，0s 常驻）
+第 2 层：作者 author_clip（ImageClip，0s 常驻）
+第 3 层：正文 viewport body_clip（VideoClip + mask，0s 常驻）
+```
+
+`build_poetry_overlays()` 返回固定长度 3。诗名和作者是合并后的静态透明位图；正文层尺寸等于正文 viewport，不等于整幅视频。
+
+### 26.2 正文层机制
+
+`body_clip` 使用 `frame_function` 每帧渲染一次：
+
+1. 所有正文列/行仍只渲染一次位图，并保存为 `BodyPieceLayout`。
+2. 每帧根据 SRT 时间和 `OffsetState` 计算一次平滑滑动 offset。
+3. 已经出现过的正文持续合成，属于累积式显示。
+4. 超出 viewport 的部分通过物理裁剪合成，不通过缩短 MoviePy 图层时间来隐藏。
+5. 旧正文进入 viewport 起始边界后按自身跨度淡出，避免突然整块消失。
+6. 新正文按 `cue.start` 淡入，时长 `LINE_FADE_IN_DURATION = 0.24s`。
+7. 滑动时长为 `SLIDE_DURATION = 0.4s`，两次 cue 间隔过近时从上一次动画的当前位置继续滑，避免跳变。
+
+### 26.3 交叉轴与呼吸空间
+
+竖排方向的主轴是横向推进，交叉轴是垂直居中；横排方向的主轴是纵向推进，交叉轴是水平居中。长句拆出的续列/续行同样按交叉轴居中。
+
+列/行间距和头部与正文间距由字号派生：
+
+```text
+COLUMN_GAP_RATIO = 0.85
+HEADER_BODY_GAP_RATIO = 1.0
+```
+
+竖排标点使用紧凑宽度 `PUNCT_ADVANCE_RATIO = 0.55`，减少中文逗号、句号在竖排中的异常空隙。
+
+### 26.4 当前朗读高亮
+
+逐字打字机方案已经改为更平滑的描边高亮：
+
+1. `_reading_timings()` 把每条 cue 的时长按字符权重拆分；普通汉字权重 1.0，紧凑标点权重 0.55。
+2. 高亮进入时间 `0.08s`，释放时间 `0.10s`，避免硬切换。
+3. 当前字符用金色描边 `READING_STROKE_COLOR = "#F5C451"` 叠加；标点高亮透明度乘以 0.25，避免视觉跳动。
+4. 高亮变体按 `(行, 拆片段, 字符索引)` 缓存，图片尺寸和正常位图保持一致，因此不会改变布局。
+
+### 26.5 测试与验收
+
+当前覆盖：
+
+1. 三层返回结构和固定头部时间。
+2. 三种方向都能构建。
+3. 正文溢出后 viewport 仍有可见 alpha。
+4. 滑动 offset 使用 SRT 绝对时间。
+5. 逐字时间切分、淡入淡出 alpha、高亮变体尺寸与像素差异。
+
+验收样图已使用真实任务素材渲染，确认旧列保留、整体滑动、边缘淡出、新列淡入和当前字金色高亮正常。

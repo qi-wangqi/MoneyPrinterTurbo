@@ -48,6 +48,7 @@ from app.services import (
     cache_manager,
     llm,
     loomloom,
+    poetry,
     video,
     volcengine_seedance,
     voice,
@@ -121,6 +122,13 @@ DEFAULT_SUBTITLE_SETTINGS = {
     "subtitle_background_enabled": False,
     "subtitle_background_color": "#000000",
     "rounded_subtitle_background": False,
+    "subtitle_style": "standard",
+    "poetry_direction": "right_to_left",
+    "poetry_margins": "6,6,6,6",
+    "poetry_margin_top": 6.0,
+    "poetry_margin_right": 6.0,
+    "poetry_margin_bottom": 6.0,
+    "poetry_margin_left": 6.0,
 }
 LOCAL_MATERIAL_EXTENSIONS = {
     ".mp4",
@@ -320,6 +328,24 @@ def _saved_ui_color(key, default):
     if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
         return value
     return default
+
+
+def _parse_poetry_margins(value):
+    """Parse clockwise top/right/bottom/left percentage margins."""
+    parts = re.split(r"[，,]", str(value or "").strip())
+    if len(parts) != 4:
+        return None
+
+    values = []
+    for part in parts:
+        try:
+            number = float(part.strip())
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or number < 0 or number > 25:
+            return None
+        values.append(number)
+    return tuple(values)
 
 
 def _saved_ui_text(key, default="", max_length=None):
@@ -1359,6 +1385,36 @@ def _apply_restored_params(params):
     st.session_state["subtitle_enabled_checkbox"] = bool(
         params.get("subtitle_enabled", True)
     )
+    _set_stable_widget_value(
+        "subtitle_style_select",
+        params.get("subtitle_style")
+        if params.get("subtitle_style") in {"standard", "poetry"}
+        else "standard",
+    )
+    _set_stable_widget_value(
+        "poetry_direction_select",
+        params.get("poetry_direction")
+        if params.get("poetry_direction")
+        in {"right_to_left", "left_to_right", "top_to_bottom"}
+        else "right_to_left",
+    )
+    poetry_margin_values = []
+    for margin_name in (
+        "poetry_margin_top",
+        "poetry_margin_right",
+        "poetry_margin_bottom",
+        "poetry_margin_left",
+    ):
+        try:
+            margin_value = min(
+                25.0, max(0.0, float(params.get(margin_name, 6.0)))
+            )
+        except (TypeError, ValueError):
+            margin_value = 6.0
+        poetry_margin_values.append(min(25.0, max(0.0, margin_value)))
+    st.session_state["poetry_margins_input"] = ",".join(
+        f"{value:g}" for value in poetry_margin_values
+    )
     _set_stable_widget_value("font_name_select", params.get("font_name") or "")
     _set_stable_widget_value(
         "subtitle_position_select", params.get("subtitle_position") or "bottom"
@@ -2032,6 +2088,9 @@ def reset_subtitle_settings():
     """恢复 WebUI 字幕控件和持久化配置中的默认值。"""
     defaults = DEFAULT_SUBTITLE_SETTINGS
     st.session_state["subtitle_enabled_checkbox"] = defaults["subtitle_enabled"]
+    _set_stable_widget_value("subtitle_style_select", defaults["subtitle_style"])
+    _set_stable_widget_value("poetry_direction_select", defaults["poetry_direction"])
+    st.session_state["poetry_margins_input"] = defaults["poetry_margins"]
     _set_stable_widget_value("font_name_select", defaults["font_name"])
     _set_stable_widget_value("subtitle_position_select", defaults["subtitle_position"])
     st.session_state["custom_position_input"] = str(defaults["custom_position"])
@@ -2052,6 +2111,13 @@ def reset_subtitle_settings():
     # 同步会持久化的 UI 选项，确保恢复后刷新页面仍保持默认设置。
     for key in (
         "subtitle_enabled",
+        "subtitle_style",
+        "poetry_direction",
+        "poetry_margins",
+        "poetry_margin_top",
+        "poetry_margin_right",
+        "poetry_margin_bottom",
+        "poetry_margin_left",
         "font_name",
         "subtitle_position",
         "custom_position",
@@ -5517,6 +5583,13 @@ def _render_subtitle_settings(panel, params):
             )
             _set_runtime_config("ui", "subtitle_enabled", params.subtitle_enabled)
             subtitle_settings_disabled = not params.subtitle_enabled
+
+            subtitle_style_options = ["standard", "poetry"]
+            saved_subtitle_style = config.ui.get(
+                "subtitle_style", DEFAULT_SUBTITLE_SETTINGS["subtitle_style"]
+            )
+            if saved_subtitle_style not in subtitle_style_options:
+                saved_subtitle_style = DEFAULT_SUBTITLE_SETTINGS["subtitle_style"]
             font_names = get_all_fonts()
             saved_font_name = config.ui.get(
                 "font_name", DEFAULT_SUBTITLE_SETTINGS["font_name"]
@@ -5533,55 +5606,135 @@ def _render_subtitle_settings(panel, params):
             )
             _set_runtime_config("ui", "font_name", params.font_name)
 
-            subtitle_positions = [
-                (tr("Top"), "top"),
-                (tr("Center"), "center"),
-                (tr("Bottom"), "bottom"),
-                (tr("Custom"), "custom"),
-            ]
-            saved_subtitle_position = config.ui.get(
-                "subtitle_position", DEFAULT_SUBTITLE_SETTINGS["subtitle_position"]
-            )
-            saved_position_index = 2
-            for i, (_, pos_value) in enumerate(subtitle_positions):
-                if pos_value == saved_subtitle_position:
-                    saved_position_index = i
-                    break
-            selected_subtitle_position = stable_selectbox(
-                tr("Position"),
-                options=[value for _, value in subtitle_positions],
-                default_value=subtitle_positions[saved_position_index][1],
-                key="subtitle_position_select",
-                format_func=lambda value: dict(
-                    (v, label) for label, v in subtitle_positions
-                )[value],
+            # format_func 会在 Streamlit 测试框架的脚本上下文之外被调用，
+            # 因此翻译文案必须在创建控件前算好，lambda 内只做纯字典查找；
+            # 若在 lambda 内调用 tr()，AppTest 同步控件状态时会因拿不到
+            # session_state 而抛错，导致整页 rerun 判定为异常。
+            subtitle_style_labels = {
+                "standard": tr("Standard Subtitles"),
+                "poetry": tr("Poetry Subtitles"),
+            }
+            selected_subtitle_style = stable_selectbox(
+                tr("Subtitle Style"),
+                options=subtitle_style_options,
+                default_value=saved_subtitle_style,
+                key="subtitle_style_select",
+                format_func=lambda value: subtitle_style_labels.get(value, value),
                 disabled=subtitle_settings_disabled,
             )
-            params.subtitle_position = selected_subtitle_position
-            _set_runtime_config("ui", "subtitle_position", params.subtitle_position)
+            params.subtitle_style = selected_subtitle_style
+            _set_runtime_config("ui", "subtitle_style", params.subtitle_style)
+            standard_position_controls_hidden = params.subtitle_style == "poetry"
+            standard_controls_disabled = (
+                subtitle_settings_disabled or standard_position_controls_hidden
+            )
 
-            if params.subtitle_position == "custom":
-                saved_custom_position = config.ui.get(
-                    "custom_position", DEFAULT_SUBTITLE_SETTINGS["custom_position"]
+            if params.subtitle_style == "poetry":
+                st.caption(tr("Poetry Subtitle Format Help"))
+                poetry_direction_options = [
+                    "right_to_left",
+                    "left_to_right",
+                    "top_to_bottom",
+                ]
+                saved_poetry_direction = config.ui.get(
+                    "poetry_direction",
+                    DEFAULT_SUBTITLE_SETTINGS["poetry_direction"],
                 )
-                st.session_state.setdefault(
-                    "custom_position_input", str(saved_custom_position)
-                )
-                custom_position = st.text_input(
-                    tr("Custom Position (% from top)"),
-                    key="custom_position_input",
+                if saved_poetry_direction not in poetry_direction_options:
+                    saved_poetry_direction = DEFAULT_SUBTITLE_SETTINGS[
+                        "poetry_direction"
+                    ]
+                poetry_direction_labels = {
+                    "right_to_left": tr("Right to Left"),
+                    "left_to_right": tr("Left to Right"),
+                    "top_to_bottom": tr("Top to Bottom"),
+                }
+                params.poetry_direction = stable_selectbox(
+                    tr("Position"),
+                    options=poetry_direction_options,
+                    default_value=saved_poetry_direction,
+                    key="poetry_direction_select",
+                    format_func=lambda value: poetry_direction_labels.get(
+                        value, value
+                    ),
                     disabled=subtitle_settings_disabled,
                 )
-                try:
-                    params.custom_position = float(custom_position)
-                    if params.custom_position < 0 or params.custom_position > 100:
-                        st.error(tr("Please enter a value between 0 and 100"))
-                    else:
-                        _set_runtime_config(
-                            "ui", "custom_position", params.custom_position
-                        )
-                except ValueError:
-                    st.error(tr("Please enter a valid number"))
+                _set_runtime_config("ui", "poetry_direction", params.poetry_direction)
+
+                saved_poetry_margins = config.ui.get(
+                    "poetry_margins", DEFAULT_SUBTITLE_SETTINGS["poetry_margins"]
+                )
+                st.session_state.setdefault(
+                    "poetry_margins_input", str(saved_poetry_margins)
+                )
+                poetry_margins_value = st.text_input(
+                    tr("Content Margins (Clockwise)"),
+                    key="poetry_margins_input",
+                    disabled=subtitle_settings_disabled,
+                    help=tr("Content Margins Help"),
+                )
+                parsed_poetry_margins = _parse_poetry_margins(poetry_margins_value)
+                if parsed_poetry_margins is None:
+                    st.error(tr("Content Margins Invalid"))
+                else:
+                    (
+                        params.poetry_margin_top,
+                        params.poetry_margin_right,
+                        params.poetry_margin_bottom,
+                        params.poetry_margin_left,
+                    ) = parsed_poetry_margins
+                    _set_runtime_config("ui", "poetry_margins", poetry_margins_value)
+
+            if not standard_position_controls_hidden:
+                subtitle_positions = [
+                    (tr("Top"), "top"),
+                    (tr("Center"), "center"),
+                    (tr("Bottom"), "bottom"),
+                    (tr("Custom"), "custom"),
+                ]
+                saved_subtitle_position = config.ui.get(
+                    "subtitle_position", DEFAULT_SUBTITLE_SETTINGS["subtitle_position"]
+                )
+                saved_position_index = 2
+                for i, (_, pos_value) in enumerate(subtitle_positions):
+                    if pos_value == saved_subtitle_position:
+                        saved_position_index = i
+                        break
+                selected_subtitle_position = stable_selectbox(
+                    tr("Position"),
+                    options=[value for _, value in subtitle_positions],
+                    default_value=subtitle_positions[saved_position_index][1],
+                    key="subtitle_position_select",
+                    format_func=lambda value: dict(
+                        (v, label) for label, v in subtitle_positions
+                    )[value],
+                    disabled=subtitle_settings_disabled,
+                )
+                params.subtitle_position = selected_subtitle_position
+                _set_runtime_config("ui", "subtitle_position", params.subtitle_position)
+
+                if params.subtitle_position == "custom":
+                    saved_custom_position = config.ui.get(
+                        "custom_position", DEFAULT_SUBTITLE_SETTINGS["custom_position"]
+                    )
+                    st.session_state.setdefault(
+                        "custom_position_input", str(saved_custom_position)
+                    )
+                    custom_position = st.text_input(
+                        tr("Custom Position (% from top)"),
+                        key="custom_position_input",
+                        disabled=subtitle_settings_disabled,
+                    )
+                    try:
+                        params.custom_position = float(custom_position)
+                        if params.custom_position < 0 or params.custom_position > 100:
+                            st.error(tr("Please enter a value between 0 and 100"))
+                        else:
+                            _set_runtime_config(
+                                "ui", "custom_position", params.custom_position
+                            )
+                    except ValueError:
+                        st.error(tr("Please enter a valid number"))
 
             # 非中文语言的颜色标签通常比中文更长。为颜色选择器保留适当宽度，
             # 避免标签换行，同时仍给字号滑块保留足够的可操作空间。
@@ -5659,7 +5812,7 @@ def _render_subtitle_settings(panel, params):
                 subtitle_background_enabled = st.checkbox(
                     tr("Enable Subtitle Background"),
                     key="subtitle_background_enabled_checkbox",
-                    disabled=subtitle_settings_disabled,
+                    disabled=standard_controls_disabled,
                 )
             _set_runtime_config(
                 "ui",
@@ -5683,7 +5836,7 @@ def _render_subtitle_settings(panel, params):
                 selected_subtitle_background_color = st.color_picker(
                     tr("Subtitle Background Color"),
                     key="subtitle_background_color_picker",
-                    disabled=subtitle_settings_disabled
+                    disabled=standard_controls_disabled
                     or not subtitle_background_enabled,
                 )
             _set_runtime_config(
@@ -5704,7 +5857,7 @@ def _render_subtitle_settings(panel, params):
             # 背景关闭时，圆角背景没有可渲染的底色。这里禁用控件但保留原配置，
             # 用户下次重新开启字幕背景后，可以继续使用之前保存的圆角偏好。
             rounded_background_disabled = (
-                subtitle_settings_disabled or not subtitle_background_enabled
+                standard_controls_disabled or not subtitle_background_enabled
             )
             st.session_state.setdefault(
                 "rounded_subtitle_background_checkbox",
@@ -5822,6 +5975,23 @@ def _render_generation_controls(
             _remove_active_generation_task(task_id)
             st.error(tr("Please Select a Valid Video Source"))
             st.stop()
+
+        if params.subtitle_enabled and params.subtitle_style == "poetry":
+            try:
+                poetry.parse_poetry_script(params.video_script)
+            except poetry.PoetryScriptError as exc:
+                _remove_active_generation_task(task_id)
+                st.error(tr(str(exc)))
+                st.stop()
+            if _parse_poetry_margins(
+                st.session_state.get(
+                    "poetry_margins_input",
+                    DEFAULT_SUBTITLE_SETTINGS["poetry_margins"],
+                )
+            ) is None:
+                _remove_active_generation_task(task_id)
+                st.error(tr("Content Margins Invalid"))
+                st.stop()
 
         if params.video_source == "pexels" and not config.app.get(
             "pexels_api_keys", ""

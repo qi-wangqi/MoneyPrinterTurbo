@@ -50,6 +50,38 @@ class TestVideoParams(unittest.TestCase):
         self.assertEqual(params.video_clip_duration, 1)
         self.assertEqual(params.video_count, 1)
 
+    def test_poetry_subtitle_fields_have_safe_defaults_and_limits(self):
+        params = VideoParams(video_subject="Poetry")
+
+        self.assertEqual(params.subtitle_style, "standard")
+        self.assertEqual(params.poetry_direction, "right_to_left")
+        for margin_name in (
+            "poetry_margin_top",
+            "poetry_margin_right",
+            "poetry_margin_bottom",
+            "poetry_margin_left",
+        ):
+            self.assertEqual(getattr(params, margin_name), 6.0)
+
+        params = VideoParams(
+            video_subject="Poetry",
+            subtitle_style="poetry",
+            poetry_direction="top_to_bottom",
+            poetry_margin_top=0,
+            poetry_margin_right=25,
+            poetry_margin_bottom=12.5,
+            poetry_margin_left=8,
+        )
+        self.assertEqual(params.poetry_margin_top, 0.0)
+        self.assertEqual(params.poetry_margin_right, 25.0)
+
+        with self.assertRaises(ValidationError):
+            VideoParams(video_subject="Poetry", subtitle_style="classic")
+        with self.assertRaises(ValidationError):
+            VideoParams(video_subject="Poetry", poetry_direction="diagonal")
+        with self.assertRaises(ValidationError):
+            VideoParams(video_subject="Poetry", poetry_margin_top=30)
+
 
 if __name__ == "__main__":
     unittest.main()

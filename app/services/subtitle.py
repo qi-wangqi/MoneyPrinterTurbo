@@ -199,10 +199,14 @@ def similarity(a, b):
     return 1 - (distance / max_length)
 
 
-def correct(subtitle_file, video_script):
+def correct(subtitle_file, video_script, segmentation: str = "punctuation"):
     subtitle_items = file_to_subtitles(subtitle_file)
     normalized_script = utils.normalize_script_for_subtitle_matching(video_script)
-    script_lines = utils.split_string_by_punctuations(normalized_script)
+    script_lines = (
+        utils.split_string_by_lines(normalized_script)
+        if segmentation == "line"
+        else utils.split_string_by_punctuations(normalized_script)
+    )
 
     corrected = False
     new_subtitle_items = []

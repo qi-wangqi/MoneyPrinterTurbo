@@ -31,43 +31,36 @@ else
   exit 1
 fi
 
-find_available_port() {
+stop_existing_webui() {
+  # 只匹配当前项目里的 WebUI 入口，避免误杀其它程序。
+  pkill -f "$CURRENT_DIR/webui/Main.py" 2>/dev/null || true
+  sleep 1
+}
+
+port_is_available() {
   WEBUI_HOST="$MPT_WEBUI_HOST" WEBUI_PORT="$MPT_WEBUI_PORT" "$@" - <<'PY' 2>/dev/null
 import os
 import socket
 import sys
 
 host = os.environ.get("WEBUI_HOST", "127.0.0.1")
-preferred = int(os.environ.get("WEBUI_PORT", "8501"))
-candidates = [preferred] + [port for port in range(8502, 8600) if port != preferred]
+port = int(os.environ.get("WEBUI_PORT", "8501"))
 
-for port in candidates:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind((host, port))
-        except OSError:
-            continue
-        print(port)
-        sys.exit(0)
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    try:
+        sock.bind((host, port))
+    except OSError:
+        sys.exit(1)
 
-sys.exit(1)
 PY
 }
 
-# 用 Python 做端口探测，避免依赖 lsof/nc 在不同 macOS/Linux 发行版上的差异。
-# shellcheck disable=SC2086
-SELECTED_WEBUI_PORT=$(find_available_port $PORT_CHECK_CMD)
+stop_existing_webui
 
-if [ -z "$SELECTED_WEBUI_PORT" ]; then
-  echo "***** No available WebUI port found in 8501-8599 for $MPT_WEBUI_HOST. *****"
+if ! port_is_available "$PORT_CHECK_CMD"; then
+  echo "***** Port $MPT_WEBUI_PORT is occupied by another program. *****"
   exit 1
 fi
-
-if [ "$SELECTED_WEBUI_PORT" != "$MPT_WEBUI_PORT" ]; then
-  echo "***** Port $MPT_WEBUI_PORT is unavailable, using $SELECTED_WEBUI_PORT instead. *****"
-fi
-
-MPT_WEBUI_PORT="$SELECTED_WEBUI_PORT"
 
 echo "***** WebUI address: http://$MPT_WEBUI_HOST:$MPT_WEBUI_PORT *****"
 "$@" run "$CURRENT_DIR/webui/Main.py" \

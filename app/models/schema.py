@@ -131,6 +131,16 @@ class VideoParams(BaseModel):
     font_size: int = 60
     stroke_color: Optional[str] = "#000000"
     stroke_width: float = 1.5
+    subtitle_style: Literal["standard", "poetry"] = "standard"
+    poetry_direction: Literal[
+        "right_to_left",
+        "left_to_right",
+        "top_to_bottom",
+    ] = "right_to_left"
+    poetry_margin_top: float = Field(default=6.0, ge=0, le=25)
+    poetry_margin_right: float = Field(default=6.0, ge=0, le=25)
+    poetry_margin_bottom: float = Field(default=6.0, ge=0, le=25)
+    poetry_margin_left: float = Field(default=6.0, ge=0, le=25)
     n_threads: Optional[int] = 4
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)

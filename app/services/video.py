@@ -37,6 +37,8 @@ from app.models.schema import (
     VideoTransitionMode,
 )
 from app.services import bgm as bgm_service
+from app.services import poetry
+from app.services import poetry_renderer
 from app.services.utils import video_effects
 from app.utils import file_security, utils
 
@@ -1050,6 +1052,45 @@ def subtitle_font_supports_text(font_path: str, text: str) -> bool:
     return _subtitle_font_supports_sample(font_path, sample)
 
 
+SUBTITLE_FONT_FALLBACKS = (
+    "MicrosoftYaHeiBold.ttc",
+    "STHeitiMedium.ttc",
+    "MicrosoftYaHeiNormal.ttc",
+    "STHeitiLight.ttc",
+)
+
+
+def resolve_subtitle_font_path(font_name: str, text: str) -> str:
+    """根据字幕文案解析可用字体；缺字形时按确定性顺序回退。
+
+    用户可能保存了仅覆盖西文的字体（例如 BeVietnamPro），却用来渲染中文
+    文案。Pillow 会把缺字形的字符画成透明像素，最终视频出现“字幕消失”。
+    这里在合成前检测字形覆盖，自动回退到内置中文字体并记录日志，避免
+    静默输出看不见的字幕。
+    """
+    base_path = os.path.join(utils.font_dir(), font_name)
+    if subtitle_font_supports_text(base_path, text):
+        return base_path
+
+    for candidate in dict.fromkeys([*SUBTITLE_FONT_FALLBACKS, font_name]):
+        if candidate == font_name:
+            continue
+        candidate_path = os.path.join(utils.font_dir(), candidate)
+        if not os.path.isfile(candidate_path):
+            continue
+        if subtitle_font_supports_text(candidate_path, text):
+            logger.warning(
+                "subtitle font cannot render the script text; "
+                f"fallback from {font_name} to {candidate}"
+            )
+            return candidate_path
+
+    logger.warning(
+        f"no built-in fallback font can render the script text; keep {font_name}"
+    )
+    return base_path
+
+
 def generate_video(
     video_path: str,
     audio_path: str,
@@ -1083,7 +1124,11 @@ def generate_video(
     if params.subtitle_enabled:
         if not params.font_name:
             params.font_name = "STHeitiMedium.ttc"
-        font_path = os.path.join(utils.font_dir(), params.font_name)
+        # 普通字幕和唐诗字幕共用同一套字形探测：选中字体缺字形时自动
+        # 回退，避免渲染出完全透明的字幕图层。
+        font_path = resolve_subtitle_font_path(
+            params.font_name, params.video_script
+        )
         if os.name == "nt":
             font_path = font_path.replace("\\", "/")
 
@@ -1278,18 +1323,41 @@ def generate_video(
             )
 
         if subtitle_path and os.path.exists(subtitle_path):
-            sub = clip_stack.enter_context(
-                SubtitlesClip(
-                    subtitles=subtitle_path,
-                    encoding="utf-8",
-                    make_textclip=make_textclip,
+            if params.subtitle_enabled and params.subtitle_style == "poetry":
+                try:
+                    poetry_script = poetry.parse_poetry_script(params.video_script)
+                    poetry_overlays = poetry_renderer.build_poetry_overlays(
+                        subtitle_path=subtitle_path,
+                        poetry_script=poetry_script,
+                        params=params,
+                        video_width=video_width,
+                        video_height=video_height,
+                        audio_duration=voice_source_clip.duration,
+                        font_path=font_path,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "failed to build poetry subtitles: "
+                        f"subtitle={subtitle_path}, error={exc}"
+                    )
+                    raise
+
+                video_clip = CompositeVideoClip(
+                    [source_video_clip, *poetry_overlays]
                 )
-            )
-            text_clips = []
-            for item in sub.subtitles:
-                clip = create_text_clip(subtitle_item=item)
-                text_clips.append(clip)
-            video_clip = CompositeVideoClip([video_clip, *text_clips])
+            else:
+                sub = clip_stack.enter_context(
+                    SubtitlesClip(
+                        subtitles=subtitle_path,
+                        encoding="utf-8",
+                        make_textclip=make_textclip,
+                    )
+                )
+                text_clips = []
+                for item in sub.subtitles:
+                    clip = create_text_clip(subtitle_item=item)
+                    text_clips.append(clip)
+                video_clip = CompositeVideoClip([video_clip, *text_clips])
             clip_stack.callback(video_clip.close)
 
         bgm_enabled = bgm_service.should_use_bgm(

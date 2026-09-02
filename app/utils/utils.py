@@ -320,6 +320,11 @@ def split_string_by_punctuations(s):
     return result
 
 
+def split_string_by_lines(s):
+    """Split a script into non-empty physical lines without breaking punctuation."""
+    return [line.strip() for line in (s or "").splitlines() if line.strip()]
+
+
 def normalize_script_for_subtitle_matching(video_script: str) -> str:
     """
     清理字幕匹配前的脚本文本。

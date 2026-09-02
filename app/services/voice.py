@@ -2110,7 +2110,12 @@ def _build_subtitle_items_from_legacy_submaker(
     return sub_items
 
 
-def create_subtitle(sub_maker: SubMaker, text: str, subtitle_file: str):
+def create_subtitle(
+    sub_maker: SubMaker,
+    text: str,
+    subtitle_file: str,
+    segmentation: str = "punctuation",
+):
     """
     优化字幕文件
     1. 将字幕文件按照标点符号分割成多行
@@ -2118,7 +2123,11 @@ def create_subtitle(sub_maker: SubMaker, text: str, subtitle_file: str):
     3. 生成新的字幕文件
     """
     text = _format_text(text)
-    script_lines = utils.split_string_by_punctuations(text)
+    script_lines = (
+        utils.split_string_by_lines(text)
+        if segmentation == "line"
+        else utils.split_string_by_punctuations(text)
+    )
     try:
         if hasattr(sub_maker, "cues") and sub_maker.cues:
             sub_items = _build_subtitle_items_from_edge_cues(sub_maker, script_lines)

@@ -20,6 +20,7 @@ from app.services import (
     llm,
     loomloom,
     material,
+    poetry,
     sonilo,
     subtitle,
     task_artifacts,
@@ -579,9 +580,13 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
     subtitle_path = path.join(utils.task_dir(task_id), "subtitle.srt")
     subtitle_provider = config.app.get("subtitle_provider", "edge").strip().lower()
     logger.info(f"\n\n## generating subtitle, provider: {subtitle_provider}")
+    poetry_mode = params.subtitle_style == "poetry"
+    segmentation = "line" if poetry_mode else "punctuation"
 
     if not subtitle_provider:
         logger.info("subtitle provider is empty, skip subtitle generation")
+        if poetry_mode:
+            _mark_task_failed(task_id, "subtitle", "subtitle provider is not configured")
         return ""
 
     if sub_maker is None and subtitle_provider != "whisper":
@@ -592,11 +597,20 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
             "subtitle maker is missing, skip subtitle generation for provider: "
             f"{subtitle_provider}"
         )
+        if poetry_mode:
+            _mark_task_failed(
+                task_id,
+                "subtitle",
+                "poetry subtitles require automatic TTS or the Whisper subtitle provider",
+            )
         return ""
 
     if subtitle_provider == "edge":
         voice.create_subtitle(
-            text=video_script, sub_maker=sub_maker, subtitle_file=subtitle_path
+            text=video_script,
+            sub_maker=sub_maker,
+            subtitle_file=subtitle_path,
+            segmentation=segmentation,
         )
         if not os.path.exists(subtitle_path):
             # Edge 字幕偶尔会因为时间轴与文案无法匹配而没有产出文件。这里不能
@@ -607,16 +621,35 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
                 "edge subtitle generation did not produce a subtitle file; "
                 "skip subtitles without falling back to whisper"
             )
+            if poetry_mode:
+                _mark_task_failed(
+                    task_id,
+                    "subtitle",
+                    "Edge subtitles did not produce timed cues for poetry mode",
+                )
             return ""
 
     if subtitle_provider == "whisper":
         subtitle.create(audio_file=audio_file, subtitle_file=subtitle_path)
         logger.info("\n\n## correcting subtitle")
-        subtitle.correct(subtitle_file=subtitle_path, video_script=video_script)
+        if poetry_mode:
+            subtitle.correct(
+                subtitle_file=subtitle_path,
+                video_script=video_script,
+                segmentation=segmentation,
+            )
+        else:
+            subtitle.correct(subtitle_file=subtitle_path, video_script=video_script)
 
     subtitle_lines = subtitle.file_to_subtitles(subtitle_path)
     if not subtitle_lines:
         logger.warning(f"subtitle file is invalid: {subtitle_path}")
+        if poetry_mode:
+            _mark_task_failed(
+                task_id,
+                "subtitle",
+                "failed to generate timed cues for poetry subtitles",
+            )
         return ""
 
     return subtitle_path
@@ -1330,6 +1363,14 @@ def _run_pipeline(
             task_id, state=const.TASK_STATE_COMPLETE, progress=100, script=video_script
         )
         return {"script": video_script}
+
+    # 唐诗模式以“前两个非空行 + 正文行”为契约。这里在消耗 TTS/素材额度前
+    # 校验格式，避免用户粘贴普通文案后先跑完配音才发现无法渲染。
+    if params.subtitle_enabled and params.subtitle_style == "poetry":
+        try:
+            poetry.parse_poetry_script(video_script)
+        except poetry.PoetryScriptError as exc:
+            return _mark_task_failed(task_id, "subtitle", str(exc))
 
     # 2. Generate terms
     video_terms = ""

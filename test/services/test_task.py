@@ -1106,6 +1106,44 @@ class TestTaskService(unittest.TestCase):
         whisper_create.assert_not_called()
         whisper_correct.assert_not_called()
 
+    def test_generate_subtitle_fails_for_poetry_when_edge_has_no_output(self):
+        """唐诗模式不能在 Edge 字幕失败后继续消耗素材与合成资源。"""
+        task_id = "test-poetry-edge-subtitle-without-output"
+        task_dir = utils.task_dir(task_id)
+        params = VideoParams(
+            video_subject="poetry",
+            video_script="【塞下曲】\n唐 · 卢纶\n林暗草惊风",
+            subtitle_enabled=True,
+            subtitle_style="poetry",
+        )
+
+        try:
+            with (
+                patch.object(
+                    tm.config,
+                    "app",
+                    dict(tm.config.app, subtitle_provider="edge"),
+                ),
+                patch.object(tm.voice, "create_subtitle"),
+                patch.object(tm, "_mark_task_failed") as mark_task_failed,
+            ):
+                subtitle_path = tm.generate_subtitle(
+                    task_id=task_id,
+                    params=params,
+                    video_script=params.video_script,
+                    sub_maker=object(),
+                    audio_file=os.path.join(task_dir, "audio.mp3"),
+                )
+        finally:
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+        self.assertEqual(subtitle_path, "")
+        mark_task_failed.assert_called_once_with(
+            task_id,
+            "subtitle",
+            "Edge subtitles did not produce timed cues for poetry mode",
+        )
+
     def test_start_returns_each_intermediate_result(self):
         """
         API 的 script、terms、audio、subtitle 和 materials 模式共用同一条任务
@@ -1704,6 +1742,15 @@ class TestTaskService(unittest.TestCase):
                 "cross_post_video",
                 return_value={"success": True, "request_id": "upload-1"},
             ) as cross_post,
+            patch.object(
+                tm.llm,
+                "generate_social_metadata",
+                return_value={
+                    "title": "Coffee",
+                    "caption": "Coffee",
+                    "hashtags": ["#coffee"],
+                },
+            ),
             patch.object(tm.time, "sleep") as sleep,
         ):
             tm._run_cross_post(
