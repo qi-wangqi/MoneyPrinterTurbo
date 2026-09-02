@@ -7,24 +7,20 @@ import gc
 import subprocess
 import sys
 import tempfile
-import unicodedata
 from contextlib import ExitStack, redirect_stdout
 from functools import lru_cache
 from typing import List
 from loguru import logger
-import numpy as np
 from moviepy import (
     AudioFileClip,
     ColorClip,
     CompositeAudioClip,
     CompositeVideoClip,
     ImageClip,
-    TextClip,
     VideoFileClip,
     afx,
 )
-from moviepy.video.tools.subtitles import SubtitlesClip
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 from app.config import config
 from app.models import const
@@ -37,8 +33,7 @@ from app.models.schema import (
     VideoTransitionMode,
 )
 from app.services import bgm as bgm_service
-from app.services import poetry
-from app.services import poetry_renderer
+from app.services import subtitles
 from app.services.utils import video_effects
 from app.utils import file_security, utils
 
@@ -826,270 +821,6 @@ def combine_videos(
     return combined_video_path
 
 
-def wrap_text(text, max_width, font="Arial", fontsize=60):
-    # 字幕换行必须在真正创建 TextClip 前完成，否则 MoviePy 只会按原始文本
-    # 计算渲染区域。这里用 PIL 按当前字体和字号测量宽度，确保每一行都尽量
-    # 控制在视频可用宽度内，避免大字号或中文长句直接溢出画面。
-    font = ImageFont.truetype(font, fontsize)
-    max_width = int(max_width)
-
-    # getbbox() 返回的是“当前字形的可见墨迹高度”，并不是字体行高。例如只含
-    # A、m、n 等无下伸部字符的英文会缺少 descent，多行时这个误差会逐行累积，
-    # 最终让 TextClip 的最后一行被画布裁掉。ascent + descent 来自字体自身，
-    # 不受具体语种和字符组合影响，也与 MoviePy 的 baseline 绘制模型一致。
-    ascent, descent = font.getmetrics()
-    line_height = int(ascent + descent)
-    if line_height <= 0:
-        # 正常 TrueType/OpenType 字体不会进入这里；保留可诊断日志和字号兜底，
-        # 避免损坏或非常规字体返回异常 metrics 后生成零高度字幕。
-        logger.warning(
-            "invalid subtitle font metrics, fallback to font size: "
-            f"ascent={ascent}, descent={descent}, fontsize={fontsize}"
-        )
-        line_height = max(1, int(fontsize))
-
-    def get_text_size(inner_text):
-        inner_text = inner_text.strip()
-        if not inner_text:
-            return 0, line_height
-        left, top, right, bottom = font.getbbox(inner_text)
-        # bbox 仍适合测量换行所需的实际宽度；高度必须始终使用稳定字体行高。
-        return right - left, line_height
-
-    width, height = get_text_size(text)
-    if width <= max_width:
-        # SRT 条目允许作者手工换行。即使整段文本在宽度上不需要再次折行，
-        # 画布高度仍必须按现有行数计算，否则第二行及后续行会被裁掉。
-        return text, (text.count("\n") + 1) * line_height
-
-    def split_long_token(token):
-        # 当一个 token 本身就超宽时（常见于中文无空格长句，或英文超长单词），
-        # 退化为字符级拆分。关键点是：检测到 candidate 超宽时，先提交上一个
-        # 仍然合法的 current，再把当前字符放入下一行，不能把超宽字符塞回上一行。
-        lines = []
-        current = ""
-        for char in token:
-            candidate = f"{current}{char}"
-            candidate_width, _ = get_text_size(candidate)
-            if candidate_width <= max_width or not current:
-                current = candidate
-                continue
-            lines.append(current)
-            current = char
-        if current:
-            lines.append(current)
-        return lines
-
-    lines = []
-    current = ""
-    words = text.split(" ")
-    for word in words:
-        candidate = f"{current} {word}".strip() if current else word
-        candidate_width, _ = get_text_size(candidate)
-        if candidate_width <= max_width:
-            current = candidate
-            continue
-
-        if current:
-            lines.append(current)
-
-        word_width, _ = get_text_size(word)
-        if word_width <= max_width:
-            current = word
-        else:
-            lines.extend(split_long_token(word))
-            current = ""
-
-    if current:
-        lines.append(current)
-
-    line_start_punctuation = "，。！？；：、,.!?;:)]}）】》」』”’"
-    for index in range(1, len(lines)):
-        # 中文长句按字符拆分时，最后一个句号、逗号等闭合标点可能被单独
-        # 放到下一行，导致字幕背景被异常撑高，视觉上像一个小点掉在正文
-        # 下方。这里在不重新设计换行算法的前提下，把上一行最后一个字
-        # 移到标点行前面，让标点跟随文字显示，兼容中英文常见闭合标点。
-        if not lines[index] or lines[index][0] not in line_start_punctuation:
-            continue
-        if len(lines[index - 1]) <= 1:
-            continue
-
-        candidate = f"{lines[index - 1][-1]}{lines[index]}"
-        candidate_width, _ = get_text_size(candidate)
-        if candidate_width <= max_width:
-            lines[index] = candidate
-            lines[index - 1] = lines[index - 1][:-1]
-
-    result = "\n".join(line.strip() for line in lines if line.strip()).strip()
-    # 高度以最终结果为准。原文本中的显式换行可能保留在某个 token 内，
-    # 此时临时 lines 列表的长度不等于 MoviePy 实际渲染的行数。
-    height = (result.count("\n") + 1) * line_height
-    return result, height
-
-
-def _hex_to_rgb(color: str) -> tuple[int, int, int]:
-    # 字幕背景色来自 API/WebUI 参数，可能为空或格式不规范。这里统一只接受
-    # #RRGGBB 形式，非法值回退为黑色，避免 PIL 渲染阶段抛出异常中断任务。
-    if isinstance(color, str) and color.startswith("#") and len(color) == 7:
-        try:
-            return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
-        except ValueError:
-            pass
-    return (0, 0, 0)
-
-
-def _rounded_subtitle_background_clip(
-    width: int,
-    height: int,
-    color: str,
-    alpha: int = 140,
-    radius: int = 16,
-) -> ImageClip:
-    # 新字幕背景仅在用户显式开启时使用：通过 RGBA 图片绘制圆角半透明底板，
-    # 再交给 MoviePy 作为透明 ImageClip 参与合成。这样默认路径完全不变，
-    # 同时可以低成本试验更柔和的字幕视觉效果。
-    rgb = _hex_to_rgb(color)
-    safe_alpha = max(0, min(255, int(alpha)))
-    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle(
-        [0, 0, max(0, width - 1), max(0, height - 1)],
-        radius=max(0, int(radius)),
-        fill=(rgb[0], rgb[1], rgb[2], safe_alpha),
-    )
-    return ImageClip(np.array(img), transparent=True)
-
-
-def _get_visible_center_position(
-    text_clip: TextClip,
-    container_width: int,
-    container_height: int,
-) -> tuple[int, int]:
-    """
-    按文字真实可见像素把 TextClip 放到背景容器中心。
-
-    MoviePy 的 TextClip 会按字体行高和 baseline 创建透明画布。很多字体的
-    可见字形并不在这个画布的几何中心，直接 `with_position("center")`
-    会把整块透明画布居中，导致字幕看起来偏上或偏下。这里读取 TextClip
-    的透明 mask，只根据实际有像素的 bbox 计算偏移，让用户看到的文字
-    在字幕背景里视觉居中。
-    """
-    x = int(round((container_width - text_clip.w) / 2))
-    y = int(round((container_height - text_clip.h) / 2))
-
-    try:
-        if text_clip.mask is None:
-            return x, y
-
-        mask_frame = text_clip.mask.get_frame(0)
-        ys, _ = np.where(mask_frame > 0.01)
-        if len(ys) == 0:
-            return x, y
-
-        visible_top = int(ys.min())
-        visible_bottom = int(ys.max())
-        visible_height = visible_bottom - visible_top + 1
-        y = int(round((container_height - visible_height) / 2 - visible_top))
-    except Exception as exc:
-        logger.debug(f"failed to center subtitle text by visible mask: {str(exc)}")
-
-    return x, y
-
-
-def subtitle_colors_are_indistinguishable(params: VideoParams) -> bool:
-    """判断字幕文字和背景是否同色，提醒用户可能无法看清字幕。"""
-    if not params.subtitle_enabled or not params.text_background_color:
-        return False
-
-    def normalize_color(value):
-        if isinstance(value, bool):
-            return "#000000" if value else ""
-        return str(value or "").strip().lower()
-
-    text_color = normalize_color(params.text_fore_color)
-    background_color = normalize_color(params.text_background_color)
-    return bool(text_color and text_color == background_color)
-
-
-@lru_cache(maxsize=64)
-def _subtitle_font_supports_sample(font_path: str, sample: str) -> bool:
-    """检查字体是否包含样本文字需要的字形，并缓存重复检查结果。"""
-    try:
-        font = ImageFont.truetype(font_path, 30)
-        missing_mask = font.getmask("\U0010ffff")
-        missing_signature = (
-            missing_mask.size,
-            missing_mask.getbbox(),
-            bytes(missing_mask),
-        )
-        for char in sample:
-            char_mask = font.getmask(char)
-            char_signature = (
-                char_mask.size,
-                char_mask.getbbox(),
-                bytes(char_mask),
-            )
-            if char_mask.getbbox() is None or char_signature == missing_signature:
-                return False
-        return True
-    except Exception as e:
-        # 字体探测失败不应阻止用户生成；保留日志供环境兼容问题排查。
-        logger.warning(f"failed to inspect subtitle font glyphs: {font_path}, {e}")
-        return True
-
-
-def subtitle_font_supports_text(font_path: str, text: str) -> bool:
-    """检查字体能否绘制文本中的字母和数字，忽略空白及标点符号。"""
-    sample = "".join(
-        dict.fromkeys(
-            char
-            for char in str(text or "")
-            if unicodedata.category(char)[0] in {"L", "N"}
-        )
-    )[:64]
-    if not sample:
-        return True
-    return _subtitle_font_supports_sample(font_path, sample)
-
-
-SUBTITLE_FONT_FALLBACKS = (
-    "MicrosoftYaHeiBold.ttc",
-    "STHeitiMedium.ttc",
-    "MicrosoftYaHeiNormal.ttc",
-    "STHeitiLight.ttc",
-)
-
-
-def resolve_subtitle_font_path(font_name: str, text: str) -> str:
-    """根据字幕文案解析可用字体；缺字形时按确定性顺序回退。
-
-    用户可能保存了仅覆盖西文的字体（例如 BeVietnamPro），却用来渲染中文
-    文案。Pillow 会把缺字形的字符画成透明像素，最终视频出现“字幕消失”。
-    这里在合成前检测字形覆盖，自动回退到内置中文字体并记录日志，避免
-    静默输出看不见的字幕。
-    """
-    base_path = os.path.join(utils.font_dir(), font_name)
-    if subtitle_font_supports_text(base_path, text):
-        return base_path
-
-    for candidate in dict.fromkeys([*SUBTITLE_FONT_FALLBACKS, font_name]):
-        if candidate == font_name:
-            continue
-        candidate_path = os.path.join(utils.font_dir(), candidate)
-        if not os.path.isfile(candidate_path):
-            continue
-        if subtitle_font_supports_text(candidate_path, text):
-            logger.warning(
-                "subtitle font cannot render the script text; "
-                f"fallback from {font_name} to {candidate}"
-            )
-            return candidate_path
-
-    logger.warning(
-        f"no built-in fallback font can render the script text; keep {font_name}"
-    )
-    return base_path
-
 
 def generate_video(
     video_path: str,
@@ -1120,187 +851,6 @@ def generate_video(
     # write into the same directory as the output file
     output_dir = os.path.dirname(output_file)
 
-    font_path = ""
-    if params.subtitle_enabled:
-        if not params.font_name:
-            params.font_name = "STHeitiMedium.ttc"
-        # 普通字幕和唐诗字幕共用同一套字形探测：选中字体缺字形时自动
-        # 回退，避免渲染出完全透明的字幕图层。
-        font_path = resolve_subtitle_font_path(
-            params.font_name, params.video_script
-        )
-        if os.name == "nt":
-            font_path = font_path.replace("\\", "/")
-
-        logger.info(f"  ⑤ font: {font_path}")
-
-    def resolve_subtitle_background_color():
-        # 兼容历史参数：API 里 `text_background_color` 既可能是布尔值，
-        # 也可能是实际颜色字符串。统一在这里归一化，避免把 True/False
-        # 直接传给 TextClip 后出现不可预期的渲染结果。
-        if isinstance(params.text_background_color, bool):
-            return "#000000" if params.text_background_color else None
-        return params.text_background_color
-
-    def create_text_clip(subtitle_item):
-        params.font_size = int(params.font_size)
-        params.stroke_width = int(params.stroke_width)
-        phrase = subtitle_item[1]
-        max_width = video_width * 0.9
-        bg_color = resolve_subtitle_background_color()
-        rounded_bg_enabled = bool(
-            getattr(params, "rounded_subtitle_background", False) and bg_color
-        )
-        has_subtitle_background = bool(bg_color)
-        # 圆角背景按文字真实宽度生成，左右留白应更克制；旧矩形背景仍保留
-        # 较大的安全边距，避免历史配置中的长字幕贴边或被裁切。
-        padding_ratio = 0.4 if rounded_bg_enabled else 0.6
-        pad_x = int(params.font_size * padding_ratio) if has_subtitle_background else 0
-        # 字幕背景需要给文字左右留出明确内边距。先从可用宽度中扣除
-        # padding 再换行，避免长英文或大字号刚好撑满 90% 视频宽度后，
-        # 文字贴到背景框边缘，看起来像被裁切。普通矩形背景和圆角背景
-        # 都走这条逻辑；无背景字幕则保持原有最大宽度。
-        text_max_width = max(1, int(max_width) - 2 * pad_x)
-        wrapped_txt, txt_height = wrap_text(
-            phrase,
-            max_width=text_max_width,
-            font=font_path,
-            fontsize=params.font_size,
-        )
-        interline = int(params.font_size * 0.25)
-        line_count = wrapped_txt.count("\n") + 1
-        vertical_padding = int(params.font_size * 0.35)
-        # Pillow/MoviePy 会把描边向字形上下两侧扩张，并把这部分计入每一行
-        # 的行进高度。若只在整个字幕块外增加一次描边留白，粗描边多行文本
-        # 仍会逐行累积误差。这里按实际行数计入双侧描边空间，默认细描边只
-        # 增加少量高度，而“小字号 + 粗描边 + 多行”也能完整显示。
-        stroke_padding = int(params.stroke_width * 2 * line_count)
-        text_clip_margin_y = max(
-            int(params.font_size * 0.3), int(params.stroke_width * 2)
-        )
-        # MoviePy 在 `method=label` 下会自动收缩文本框高度，遇到多行字幕、
-        # 描边或背景色时，容易把最后一行的下半部分裁掉。这里显式传入
-        # 一个更保守的高度，把行间距和额外上下留白一并算进去，保证字幕
-        # 背景框与文字本身都能完整渲染出来。
-        clip_h = int(
-            txt_height
-            + vertical_padding
-            + (interline * line_count)
-            + stroke_padding
-        )
-
-        if rounded_bg_enabled:
-            # 圆角背景需要贴合文字宽度，而不是沿用 90% 视频宽度。这里先用
-            # PIL 测量最长一行文字，再加水平内边距，避免短字幕出现过宽底板。
-            try:
-                font = ImageFont.truetype(font_path, params.font_size)
-                text_w = max(
-                    int(font.getbbox(line)[2] - font.getbbox(line)[0])
-                    for line in wrapped_txt.split("\n")
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"failed to measure subtitle text width, fallback to max width: {str(exc)}"
-                )
-                text_w = int(max_width)
-
-            box_w = max(1, min(int(max_width), text_w + 2 * pad_x))
-            radius = max(8, int(params.font_size * 0.4))
-            text_clip = TextClip(
-                text=wrapped_txt,
-                font=font_path,
-                font_size=params.font_size,
-                color=params.text_fore_color,
-                bg_color=None,
-                stroke_color=params.stroke_color,
-                stroke_width=params.stroke_width,
-                interline=interline,
-                size=(box_w, None),
-                text_align="center",
-                margin=(0, text_clip_margin_y),
-            )
-            clip_h = max(clip_h, text_clip.h)
-            bg_clip = _rounded_subtitle_background_clip(
-                width=box_w,
-                height=clip_h,
-                color=bg_color,
-                alpha=140,
-                radius=radius,
-            )
-            text_position = _get_visible_center_position(text_clip, box_w, clip_h)
-            _clip = CompositeVideoClip(
-                [bg_clip, text_clip.with_position(text_position)],
-                size=(box_w, clip_h),
-            )
-        elif bg_color:
-            size = (
-                int(max_width),
-                clip_h,
-            )
-            text_clip = TextClip(
-                text=wrapped_txt,
-                font=font_path,
-                font_size=params.font_size,
-                color=params.text_fore_color,
-                bg_color=None,
-                stroke_color=params.stroke_color,
-                stroke_width=params.stroke_width,
-                interline=interline,
-                size=(int(max_width), None),
-                text_align="center",
-                margin=(0, text_clip_margin_y),
-            )
-            size = (size[0], max(size[1], text_clip.h))
-            bg_clip = _rounded_subtitle_background_clip(
-                width=size[0],
-                height=size[1],
-                color=bg_color,
-                alpha=255,
-                radius=0,
-            )
-            text_position = _get_visible_center_position(text_clip, size[0], size[1])
-            _clip = CompositeVideoClip(
-                [bg_clip, text_clip.with_position(text_position)],
-                size=size,
-            )
-        else:
-            size = (
-                int(max_width),
-                clip_h,
-            )
-            _clip = TextClip(
-                text=wrapped_txt,
-                font=font_path,
-                font_size=params.font_size,
-                color=params.text_fore_color,
-                bg_color=None,
-                stroke_color=params.stroke_color,
-                stroke_width=params.stroke_width,
-                interline=interline,
-                size=size,
-                text_align="center",
-            )
-        duration = subtitle_item[0][1] - subtitle_item[0][0]
-        _clip = _clip.with_start(subtitle_item[0][0])
-        _clip = _clip.with_end(subtitle_item[0][1])
-        _clip = _clip.with_duration(duration)
-        if params.subtitle_position == "bottom":
-            _clip = _clip.with_position(("center", video_height * 0.95 - _clip.h))
-        elif params.subtitle_position == "top":
-            _clip = _clip.with_position(("center", video_height * 0.05))
-        elif params.subtitle_position == "custom":
-            # Ensure the subtitle is fully within the screen bounds
-            margin = 10  # Additional margin, in pixels
-            max_y = video_height - _clip.h - margin
-            min_y = margin
-            custom_y = (video_height - _clip.h) * (params.custom_position / 100)
-            custom_y = max(
-                min_y, min(custom_y, max_y)
-            )  # Constrain the y value within the valid range
-            _clip = _clip.with_position(("center", custom_y))
-        else:  # center
-            _clip = _clip.with_position(("center", "center"))
-        return _clip
 
     # MoviePy 的 CompositeAudioClip.close() 不会关闭子 AudioFileClip。这里用
     # ExitStack 显式持有所有原始文件 reader，确保成功、字幕异常、混音失败和
@@ -1315,50 +865,30 @@ def generate_video(
             [afx.MultiplyVolume(params.voice_volume)]
         )
 
-        def make_textclip(text):
-            return TextClip(
-                text=text,
-                font=font_path,
-                font_size=params.font_size,
-            )
-
         if subtitle_path and os.path.exists(subtitle_path):
-            if params.subtitle_enabled and params.subtitle_style == "poetry":
+            if params.subtitle_enabled:
+                # 字幕渲染收敛为一次门面调用：普通字幕、诗歌字幕以及未来
+                # 的显示模式全部由 subtitles 包内部根据配置分发，流水线
+                # 不感知任何渲染细节。
                 try:
-                    poetry_script = poetry.parse_poetry_script(params.video_script)
-                    poetry_overlays = poetry_renderer.build_poetry_overlays(
+                    overlays = subtitles.build_overlays(
                         subtitle_path=subtitle_path,
-                        poetry_script=poetry_script,
                         params=params,
                         video_width=video_width,
                         video_height=video_height,
                         audio_duration=voice_source_clip.duration,
-                        font_path=font_path,
                     )
                 except Exception as exc:
                     logger.exception(
-                        "failed to build poetry subtitles: "
+                        "failed to build subtitles: "
                         f"subtitle={subtitle_path}, error={exc}"
                     )
                     raise
 
                 video_clip = CompositeVideoClip(
-                    [source_video_clip, *poetry_overlays]
+                    [source_video_clip, *overlays]
                 )
-            else:
-                sub = clip_stack.enter_context(
-                    SubtitlesClip(
-                        subtitles=subtitle_path,
-                        encoding="utf-8",
-                        make_textclip=make_textclip,
-                    )
-                )
-                text_clips = []
-                for item in sub.subtitles:
-                    clip = create_text_clip(subtitle_item=item)
-                    text_clips.append(clip)
-                video_clip = CompositeVideoClip([video_clip, *text_clips])
-            clip_stack.callback(video_clip.close)
+                clip_stack.callback(video_clip.close)
 
         bgm_enabled = bgm_service.should_use_bgm(
             params.bgm_type, params.bgm_volume

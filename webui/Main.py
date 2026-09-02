@@ -48,7 +48,6 @@ from app.services import (
     cache_manager,
     llm,
     loomloom,
-    poetry,
     video,
     volcengine_seedance,
     voice,
@@ -58,6 +57,7 @@ from app.services import elevenlabs_music as elevenlabs_music_service
 from app.services import sonilo as sonilo_service
 from app.services import state as sm
 from app.services import task as tm
+from app.services import subtitles
 from app.services import version_checker
 from app.utils.logging_utils import configure_terminal_logger
 from app.utils import utils
@@ -5881,7 +5881,7 @@ def _render_subtitle_settings(panel, params):
                     selected_rounded_subtitle_background,
                 )
 
-            if video.subtitle_colors_are_indistinguishable(params):
+            if subtitles.config.subtitle_colors_are_indistinguishable(params):
                 # 同色配置仍然是合法的用户选择，因此只在字幕设置区域就近提示，
                 # 不阻止生成。用户可以根据实际视觉需求决定是否继续。
                 st.warning(tr("Subtitle Colors Are Indistinguishable"))
@@ -5978,8 +5978,8 @@ def _render_generation_controls(
 
         if params.subtitle_enabled and params.subtitle_style == "poetry":
             try:
-                poetry.parse_poetry_script(params.video_script)
-            except poetry.PoetryScriptError as exc:
+                subtitles.script.parse_script(params.video_script, header_line_count=2)
+            except subtitles.script.ScriptParseError as exc:
                 _remove_active_generation_task(task_id)
                 st.error(tr(str(exc)))
                 st.stop()

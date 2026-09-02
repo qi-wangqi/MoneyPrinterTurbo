@@ -20,10 +20,9 @@ from app.services import (
     llm,
     loomloom,
     material,
-    poetry,
     sonilo,
-    subtitle,
     task_artifacts,
+    subtitles,
     twelvelabs,
     video,
     volcengine_seedance,
@@ -630,18 +629,20 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
             return ""
 
     if subtitle_provider == "whisper":
-        subtitle.create(audio_file=audio_file, subtitle_file=subtitle_path)
+        subtitles.srt.create(audio_file=audio_file, subtitle_file=subtitle_path)
         logger.info("\n\n## correcting subtitle")
         if poetry_mode:
-            subtitle.correct(
+            subtitles.srt.correct(
                 subtitle_file=subtitle_path,
                 video_script=video_script,
                 segmentation=segmentation,
             )
         else:
-            subtitle.correct(subtitle_file=subtitle_path, video_script=video_script)
+            subtitles.srt.correct(
+                subtitle_file=subtitle_path, video_script=video_script
+            )
 
-    subtitle_lines = subtitle.file_to_subtitles(subtitle_path)
+    subtitle_lines = subtitles.srt.file_to_subtitles(subtitle_path)
     if not subtitle_lines:
         logger.warning(f"subtitle file is invalid: {subtitle_path}")
         if poetry_mode:
@@ -1368,8 +1369,8 @@ def _run_pipeline(
     # 校验格式，避免用户粘贴普通文案后先跑完配音才发现无法渲染。
     if params.subtitle_enabled and params.subtitle_style == "poetry":
         try:
-            poetry.parse_poetry_script(video_script)
-        except poetry.PoetryScriptError as exc:
+            subtitles.script.parse_script(video_script, header_line_count=2)
+        except subtitles.script.ScriptParseError as exc:
             return _mark_task_failed(task_id, "subtitle", str(exc))
 
     # 2. Generate terms

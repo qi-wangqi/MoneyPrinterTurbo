@@ -1,3 +1,9 @@
+"""SRT 字幕文本层：Whisper 转写、SRT 读取与脚本校正。
+
+这一层负责“字幕文本从哪来、时间对不对”，不负责渲染。渲染入口在
+包的 __init__.build_overlays。
+"""
+
 import json
 import os.path
 import re
