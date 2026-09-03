@@ -1,8 +1,18 @@
 # 统一字幕设置设计
 
-状态：设计稿，未实施。  
-目标：重写字幕设置与渲染配置，覆盖横排、竖排、替换式、整块、累积滚动等场景。  
+状态：实施稿，代码在当前工作树完成。
+
+目标：重写字幕设置与渲染配置，覆盖横排、竖排、逐条弹出、全文显示、连续滚动等场景。
 范围：本文只定义目标字段、语义、尺寸计算、显示规则和渲染分层；不处理历史字段迁移。
+
+代码契约位置：
+
+```text
+app/models/schema.py        对外字幕字段契约与选项枚举
+app/services/subtitles/models.py 字幕内部领域模型（margin / viewport / cue / script info）
+app/models/exception.py     SubtitleException
+app/services/subtitles/     配置转换、排版、绘制、时间轴渲染
+```
 
 ---
 
@@ -35,30 +45,39 @@ align_v
 
 作为顶层业务字段。
 
-## 1.2 枚举值命名
+## 1.2 枚举命名
 
-枚举值也要能脱离上下文看懂。
-
-因此：
-
-```text
-subtitle_show_mode = "show_scroll"
-```
-
-而不是：
+枚举类名保留 `Subtitle` 前缀；枚举成员和枚举值统一使用小写短命名，
+多词成员使用 snake_case，不重复字段前缀。
 
 ```text
-subtitle_show_mode = "scroll"
+class SubtitleDirection:
+    horizontal = "horizontal"
+    vertical_rtl = "vertical_rtl"
+    vertical_ltr = "vertical_ltr"
+
+class SubtitleShowMode:
+    punctuation = "punctuation"
+    sentence = "sentence"
+    scroll = "scroll"
+    block = "block"
+
+class SubtitleAlignH:
+    left = "left"
+    center = "center"
+    right = "right"
+
+class SubtitleAlignV:
+    top = "top"
+    middle = "middle"
+    bottom = "bottom"
+
+class SubtitleBackgroundStyle:
+    rectangle = "rectangle"
+    rounded_translucent = "rounded_translucent"
 ```
 
-同理：
-
-```text
-subtitle_direction = "direction_vertical_right_to_left"
-subtitle_background_style = "background_style_rounded_translucent"
-```
-
-对于字段名已经能明确表达含义的简单枚举，可以继续使用短值，例如：
+字段名已经带上下文，因此简单枚举也继续使用短值，例如：
 
 ```text
 subtitle_align_h = "left" / "center" / "right"
@@ -86,13 +105,13 @@ subtitle_align_v = "top" / "middle" / "bottom"
 1 个 cue 可以包含 1 个或 N 个 slot。
 N 个 slot 组成当前 cue 的 cue content block。
 
-show_punctuation / show_sentence：
+punctuation / sentence：
 display block = 当前 cue content block
 
-show_scroll：
+scroll：
 display block = 已经出现的累积内容块
 
-show_block：
+block：
 display block = 全部正文组成的一个 block
 ```
 
@@ -117,8 +136,8 @@ content block 使用实际渲染内容的包围盒。
 |---:|---|---|---|---|---|
 | 0 | `subtitle_enabled` | 启用字幕 | 开关 | `true` / `false` | `true` |
 | 1 | `subtitle_font` | 字幕字体 | 下拉框 | 字体注册表动态返回的字体名 | 系统默认字体 |
-| 2 | `subtitle_direction` | 文字方向 | 下拉框 | `direction_horizontal` / `direction_vertical_right_to_left` / `direction_vertical_left_to_right` | `direction_horizontal` |
-| 3 | `subtitle_show_mode` | 显示模式 | 下拉框 | `show_punctuation` / `show_sentence` / `show_block` / `show_scroll` | `show_punctuation` |
+| 2 | `subtitle_direction` | 文字方向 | 下拉框 | `horizontal` / `vertical_rtl` / `vertical_ltr` | `horizontal` |
+| 3 | `subtitle_show_mode` | 显示模式 | 下拉框 | `punctuation` / `sentence` / `block` / `scroll` | `punctuation` |
 | 4 | `subtitle_align_h` | 水平对齐 | 下拉框 | `left` / `center` / `right` | `center` |
 | 5 | `subtitle_align_v` | 垂直对齐 | 下拉框 | `top` / `middle` / `bottom` | `bottom` |
 | 6 | `subtitle_margin` | 字幕区域与视频外边距 | 单输入框 | `6%,6%,6%,6%`，顺序为上、右、下、左 | `6%,6%,6%,6%` |
@@ -128,14 +147,14 @@ content block 使用实际渲染内容的包围盒。
 | 8 | `subtitle_stroke_width` | 描边粗细 | 数字输入 / 滑块 | `0.0` 到 `10.0`，`0` 表示无描边 | `1.5` |
 | 9 | `subtitle_background_enabled` | 启用字幕背景 | 开关 | `true` / `false` | `false` |
 | 9 | `subtitle_background_color` | 字幕背景颜色 | 颜色选择器 | `#RRGGBB` 或 `#RRGGBBAA` | `#000000` |
-| 10 | `subtitle_background_style` | 字幕背景样式 | 下拉框 | `background_style_rectangle` / `background_style_rounded_translucent` | `background_style_rectangle` |
+| 10 | `subtitle_background_style` | 字幕背景样式 | 下拉框 | `rectangle` / `rounded_translucent` | `rectangle` |
 
 说明：
 
 1. `subtitle_font` 的候选值来自字体注册表，不直接让用户输入路径。
 2. `subtitle_font_size` 是目标视频坐标系下的像素值。预览界面应按预览尺寸等比缩放显示。
 3. `subtitle_margin` 是 UI 输入形态；后端规范配置应拆成四个结构化 margin 字段。
-4. `subtitle_background_style = "background_style_rounded_translucent"` 表示圆角半透明背景；该选项只有在 `subtitle_background_enabled = true` 时生效。
+4. `subtitle_background_style = "rounded_translucent"` 表示圆角半透明背景；该选项只有在 `subtitle_background_enabled = true` 时生效。
 5. `subtitle_background_enabled = false` 时，背景颜色和样式仍可保存在 UI 配置里，但渲染时忽略。
 
 ---
@@ -175,22 +194,25 @@ content block 使用实际渲染内容的包围盒。
 |---|---|
 | 中文名 | 文字方向 |
 | 类型 | enum |
-| 选项 | `direction_horizontal`, `direction_vertical_right_to_left`, `direction_vertical_left_to_right` |
-| 默认值 | `direction_horizontal` |
+| 选项 | `horizontal`, `vertical_rtl`, `vertical_ltr` |
+| 默认值 | `horizontal` |
 
 | 值 | 中文名 | 排版语义 |
 |---|---|---|
-| `direction_horizontal` | 横排 | 文字从左到右，行从上到下堆叠 |
-| `direction_vertical_right_to_left` | 竖排，从右到左 | 单列文字从上到下，列从右向左推进 |
-| `direction_vertical_left_to_right` | 竖排，从左到右 | 单列文字从上到下，列从左向右推进 |
+| `horizontal` | 横排 | 文字从左到右，行从上到下堆叠 |
+| `vertical_rtl` | 竖排，从右到左 | 单列文字从上到下，列从右向左推进 |
+| `vertical_ltr` | 竖排，从左到右 | 单列文字从上到下，列从左向右推进 |
+
+`subtitle_direction` 是全局文字方向：诗名、作者、正文必须使用同一种
+文字方向。头部行 / 头部列只是“固定不参与滚动”，不能单独横竖混排。
 
 `subtitle_direction` 同时决定溢出方向锚点：
 
 | 值 | 新内容进入边 | 旧内容退出 / 裁剪边 |
 |---|---|---|
-| `direction_horizontal` | 新行从下方进入 | 旧行向上滑动，顶部旧行被裁剪 |
-| `direction_vertical_right_to_left` | 第一列贴 viewport 右侧，新列向左出现 | 旧列继续向左滑动，左侧旧列被裁剪 |
-| `direction_vertical_left_to_right` | 第一列贴 viewport 左侧，新列向右出现 | 旧列继续向右滑动，右侧旧列被裁剪 |
+| `horizontal` | 新行从下方进入 | 旧行向上滑动，顶部旧行被裁剪 |
+| `vertical_rtl` | 第一列贴 viewport 右侧，新列向左出现 | 旧列继续向左滑动，左侧旧列被裁剪 |
+| `vertical_ltr` | 第一列贴 viewport 左侧，新列向右出现 | 旧列继续向右滑动，右侧旧列被裁剪 |
 
 ## 4.4 `subtitle_show_mode`
 
@@ -198,22 +220,22 @@ content block 使用实际渲染内容的包围盒。
 |---|---|
 | 中文名 | 显示模式 |
 | 类型 | enum |
-| 选项 | `show_punctuation`, `show_sentence`, `show_block`, `show_scroll` |
-| 默认值 | `show_punctuation` |
+| 选项 | `punctuation`, `sentence`, `block`, `scroll` |
+| 默认值 | `punctuation` |
 
 | 值 | 中文名 | 显示语义 |
 |---|---|---|
-| `show_punctuation` | 按标点显示 | 按标点切分 cue，逐条替换显示；标点保留在字幕中 |
-| `show_sentence` | 按句子显示 | 按完整句结束符切分 cue，逐条替换显示；句内标点保留 |
-| `show_block` | 整块显示 | 全部正文作为一个 cue 常驻显示；不自动拆分、不自动缩放 |
-| `show_scroll` | 累积滚动 | 按物理换行切分 cue；已出现的 cue 累积保留，超出 viewport 后滑动裁剪 |
+| `punctuation` | 逐条弹出（按所有标点切分） | 按标点切分 cue，逐条替换显示；标点保留在字幕中 |
+| `sentence` | 逐条弹出（按句末标点切分） | 按完整句结束符切分 cue，逐条替换显示；句内标点保留 |
+| `block` | 全文显示 | 全部正文作为一个 cue 常驻显示；不自动拆分、不自动缩放 |
+| `scroll` | 连续滚动 | 按物理换行切分 cue；已出现的 cue 累积保留，超出 viewport 后滑动裁剪 |
 
 补充规则：
 
-1. `show_punctuation` 和 `show_sentence` 是替换式显示。
-2. `show_block` 是整块常驻显示。
-3. `show_scroll` 是累积式显示，不是逐条替换。
-4. `show_scroll` 时，没有换行符的长文本就是一个 cue；如果放不下，再拆成续行/续列。
+1. `punctuation` 和 `sentence` 是逐条弹出的替换式显示。
+2. `block` 是全文常驻显示。
+3. `scroll` 是连续滚动显示，不是逐条替换。
+4. `scroll` 时，没有换行符的长文本就是一个 cue；如果放不下，再拆成续行/续列。
 5. 标点是否被 TTS 读出与字幕渲染无关；字幕按原文显示标点。
 
 ## 4.5 `subtitle_align_h`
@@ -234,6 +256,11 @@ right  => 当前 display block 在 viewport 内靠右
 ```
 
 它控制的是整块内容的位置，不是单独某一行的行槽位置。
+
+注意：`vertical_rtl` 的渲染坐标系从右往左推进，但用户语义不反向。
+因此 `subtitle_align_h = "left"` 仍然表示整块内容靠 viewport 左侧；
+引擎内部把这个用户语义换算成正确的 RTL 坐标偏移，而不是让用户
+选择 `left` 后看到内容贴右。
 
 ## 4.6 `subtitle_align_v`
 
@@ -265,14 +292,13 @@ UI 只显示一个输入框：
 | 示例 | `6%,6%,6%,6%` |
 | 顺序 | 上、右、下、左 |
 
-后端规范配置使用五个字段：
+后端规范配置使用四个字段，单位固定为百分比，不单独保存单位字段：
 
 ```text
 subtitle_margin_top
 subtitle_margin_right
 subtitle_margin_bottom
 subtitle_margin_left
-subtitle_margin_unit
 ```
 
 后端保存示例：
@@ -283,7 +309,6 @@ subtitle_margin_unit
   "subtitle_margin_right": 6,
   "subtitle_margin_bottom": 6,
   "subtitle_margin_left": 6,
-  "subtitle_margin_unit": "percent"
 }
 ```
 
@@ -386,13 +411,13 @@ viewport_height = video_height * (100 - subtitle_margin_top - subtitle_margin_bo
 |---|---|
 | 中文名 | 字幕背景样式 |
 | 类型 | enum |
-| 选项 | `background_style_rectangle`, `background_style_rounded_translucent` |
-| 默认值 | `background_style_rectangle` |
+| 选项 | `rectangle`, `rounded_translucent` |
+| 默认值 | `rectangle` |
 
 | 值 | 中文名 | 效果 |
 |---|---|---|
-| `background_style_rectangle` | 直角背景 | 使用背景颜色绘制直角背景 |
-| `background_style_rounded_translucent` | 圆角半透明背景 | 使用背景颜色绘制圆角背景，并应用渲染器默认半透明度 |
+| `rectangle` | 直角背景 | 使用背景颜色绘制直角背景 |
+| `rounded_translucent` | 圆角半透明背景 | 使用背景颜色绘制圆角背景，并应用渲染器默认半透明度 |
 
 第一阶段不新增透明度字段。如果后续用户需要自定义透明度，再增加：
 
@@ -406,22 +431,21 @@ subtitle_background_opacity
 {
   "subtitle_enabled": true,
   "subtitle_font": "方正字迹-心海龙体.ttf",
-  "subtitle_direction": "direction_vertical_right_to_left",
-  "subtitle_show_mode": "show_scroll",
+  "subtitle_direction": "vertical_rtl",
+  "subtitle_show_mode": "scroll",
   "subtitle_align_h": "center",
   "subtitle_align_v": "middle",
   "subtitle_margin_top": 6,
   "subtitle_margin_right": 6,
   "subtitle_margin_bottom": 6,
   "subtitle_margin_left": 6,
-  "subtitle_margin_unit": "percent",
   "subtitle_text_color": "#FFFFFF",
   "subtitle_font_size": 60,
   "subtitle_stroke_color": "#000000",
   "subtitle_stroke_width": 1.5,
   "subtitle_background_enabled": false,
   "subtitle_background_color": "#000000",
-  "subtitle_background_style": "background_style_rectangle"
+  "subtitle_background_style": "rectangle"
 }
 ```
 
@@ -431,22 +455,21 @@ subtitle_background_opacity
 {
   "subtitle_enabled": true,
   "subtitle_font": "STHeitiMedium.ttc",
-  "subtitle_direction": "direction_horizontal",
-  "subtitle_show_mode": "show_sentence",
+  "subtitle_direction": "horizontal",
+  "subtitle_show_mode": "sentence",
   "subtitle_align_h": "center",
   "subtitle_align_v": "bottom",
   "subtitle_margin_top": 6,
   "subtitle_margin_right": 6,
   "subtitle_margin_bottom": 6,
   "subtitle_margin_left": 6,
-  "subtitle_margin_unit": "percent",
   "subtitle_text_color": "#FFFFFF",
   "subtitle_font_size": 60,
   "subtitle_stroke_color": "#000000",
   "subtitle_stroke_width": 1.5,
   "subtitle_background_enabled": true,
   "subtitle_background_color": "#000000",
-  "subtitle_background_style": "background_style_rounded_translucent"
+  "subtitle_background_style": "rounded_translucent"
 }
 ```
 
@@ -480,9 +503,9 @@ viewport_y
 
 | direction | slot capacity box |
 |---|---|
-| `direction_horizontal` | 行槽容量宽度 = viewport 宽度 |
-| `direction_vertical_right_to_left` | 列槽容量高度 = viewport 高度 |
-| `direction_vertical_left_to_right` | 列槽容量高度 = viewport 高度 |
+| `horizontal` | 行槽容量宽度 = viewport 宽度 |
+| `vertical_rtl` | 列槽容量高度 = viewport 高度 |
+| `vertical_ltr` | 列槽容量高度 = viewport 高度 |
 
 注意：
 
@@ -555,10 +578,10 @@ cue content block size = 这个槽的 visual box size
 
 | subtitle_show_mode | display block |
 |---|---|
-| `show_punctuation` | 当前 cue content block |
-| `show_sentence` | 当前 cue content block |
-| `show_block` | 全部正文组成的一个 content block |
-| `show_scroll` | 已经出现的累积内容块 |
+| `punctuation` | 当前 cue content block |
+| `sentence` | 当前 cue content block |
+| `block` | 全部正文组成的一个 content block |
+| `scroll` | 已经出现的累积内容块 |
 
 所以，滚动模式下的定位对象不是“当前 cue”，而是“累积显示内容块”。
 
@@ -701,9 +724,9 @@ slot_align_h / slot_align_v
 
 | direction | slot_align_h | slot_align_v |
 |---|---|---|
-| `direction_horizontal` | 等于 `subtitle_align_h` | 固定 `middle` |
-| `direction_vertical_right_to_left` | 固定 `center` | 等于 `subtitle_align_v` |
-| `direction_vertical_left_to_right` | 固定 `center` | 等于 `subtitle_align_v` |
+| `horizontal` | 等于 `subtitle_align_h` | 固定 `middle` |
+| `vertical_rtl` | 固定 `center` | 等于 `subtitle_align_v` |
+| `vertical_ltr` | 固定 `center` | 等于 `subtitle_align_v` |
 
 说明：
 
@@ -719,7 +742,7 @@ slot_align_h / slot_align_v
 示例：
 
 ```text
-subtitle_direction = "direction_horizontal"
+subtitle_direction = "horizontal"
 subtitle_align_h        = "center"
 subtitle_align_v        = "bottom"
 
@@ -729,7 +752,7 @@ slot_align_v = middle
 ```
 
 ```text
-subtitle_direction = "direction_vertical_right_to_left"
+subtitle_direction = "vertical_rtl"
 subtitle_align_h        = "center"
 subtitle_align_v        = "middle"
 
@@ -798,7 +821,7 @@ slot_align_h = "left"
 列2：奔流到海
 ```
 
-`subtitle_direction = "direction_vertical_right_to_left"` 时，列 1 在右，列 2 在左。
+`subtitle_direction = "vertical_rtl"` 时，列 1 在右，列 2 在左。
 
 如果：
 
@@ -922,22 +945,22 @@ viewport 负责裁剪
 
 | direction | 溢出行为 |
 |---|---|
-| `direction_horizontal` | 新行从下方进入，旧内容整体向上滑动，顶部旧行被裁剪 |
-| `direction_vertical_right_to_left` | 新列向左出现，旧内容向左滑动，左侧旧列被裁剪 |
-| `direction_vertical_left_to_right` | 新列向右出现，旧内容向右滑动，右侧旧列被裁剪 |
+| `horizontal` | 新行从下方进入，旧内容整体向上滑动，顶部旧行被裁剪 |
+| `vertical_rtl` | 新列向左出现，旧内容向左滑动，左侧旧列被裁剪 |
+| `vertical_ltr` | 新列向右出现，旧内容向右滑动，右侧旧列被裁剪 |
 
 溢出时不自动缩小字体、不自动隐藏后续内容、不自动改换显示模式。
 
-## 9.3 `show_block` 的溢出
+## 9.3 `block` 的溢出
 
-`show_block` 不自动拆分、不自动缩放。
+`block` 不自动拆分、不自动缩放。
 
-如果用户选择整块显示但内容放不下，属于用户选择结果，渲染器只按 viewport 裁剪。
+如果用户选择全文显示但内容放不下，属于用户选择结果，渲染器只按 viewport 裁剪。
 
 这一点需要在前端帮助文案中说明：
 
 ```text
-整块显示模式不会自动缩小文字或拆分内容；如果内容超出字幕区域，将被裁剪。
+全文显示模式不会自动缩小文字或拆分内容；如果内容超出字幕区域，将被裁剪。
 ```
 
 ---
@@ -979,7 +1002,7 @@ PlacementStrategy
 溢出：按 direction 锚点和滚动偏移处理
 ↓
 ViewportRenderer
-裁剪 viewport 外内容，处理替换式 / 累积式 / 整块式生命周期
+裁剪 viewport 外内容，处理逐条弹出 / 连续滚动 / 全文常驻生命周期
 ↓
 StyleRenderer
 渲染字体、颜色、描边、背景、圆角
@@ -1005,8 +1028,8 @@ StyleRenderer
 配置：
 
 ```text
-subtitle_direction = direction_horizontal
-subtitle_show_mode      = show_sentence
+subtitle_direction = horizontal
+subtitle_show_mode      = sentence
 subtitle_align_h        = center
 subtitle_align_v        = bottom
 margin                  = 6%,6%,6%,6%
@@ -1025,8 +1048,8 @@ margin                  = 6%,6%,6%,6%
 配置：
 
 ```text
-subtitle_direction = direction_vertical_right_to_left
-subtitle_show_mode      = show_scroll
+subtitle_direction = vertical_rtl
+subtitle_show_mode      = scroll
 subtitle_align_h        = center
 subtitle_align_v        = middle
 margin                  = 6%,6%,6%,6%
@@ -1045,8 +1068,8 @@ margin                  = 6%,6%,6%,6%
 配置：
 
 ```text
-subtitle_direction = direction_horizontal
-subtitle_show_mode      = show_scroll
+subtitle_direction = horizontal
+subtitle_show_mode      = scroll
 subtitle_align_h        = center
 subtitle_align_v        = middle
 margin                  = 6%,6%,6%,6%
@@ -1060,20 +1083,20 @@ margin                  = 6%,6%,6%,6%
 4. 行数超出 viewport 时，新行从下方进入，旧内容整体向上滑动。
 5. 最上方旧行被 viewport 上边缘裁剪。
 
-## 11.4 整块显示
+## 11.4 全文显示
 
 配置：
 
 ```text
-subtitle_direction = direction_horizontal
-subtitle_show_mode      = show_block
+subtitle_direction = horizontal
+subtitle_show_mode      = block
 subtitle_align_h        = center
 subtitle_align_v        = middle
 ```
 
 效果：
 
-1. 全部正文作为一个整块常驻显示。
+1. 全部正文作为一个内容块常驻显示。
 2. 不按标点、句子或换行拆 cue。
 3. 内容放不下时不自动缩放、不自动拆分。
 4. 超出 viewport 的部分被裁剪。
@@ -1088,24 +1111,23 @@ subtitle_align_v        = middle
 |---|---|
 | `subtitle_enabled` | 必须是 boolean |
 | `subtitle_font` | 必须存在于字体注册表 |
-| `subtitle_direction` | 必须是三个 `direction_` 枚举值之一 |
-| `subtitle_show_mode` | 必须是四个 `show_` 枚举值之一 |
+| `subtitle_direction` | 必须是 `horizontal` / `vertical_rtl` / `vertical_ltr` |
+| `subtitle_show_mode` | 必须是 `punctuation` / `sentence` / `block` / `scroll` |
 | `subtitle_align_h` | 必须是 `left` / `center` / `right` |
 | `subtitle_align_v` | 必须是 `top` / `middle` / `bottom` |
 | `subtitle_margin_*` | 四个数字必须是百分比数字，范围 `0-25`，且相对边之和小于 `100` |
-| `subtitle_margin_unit` | 第一阶段固定为 `percent` |
 | `subtitle_font_size` | 必须大于 `0` |
 | `subtitle_text_color` | 必须是合法颜色值 |
 | `subtitle_stroke_color` | 必须是合法颜色值 |
 | `subtitle_stroke_width` | 必须在 `0.0-10.0` |
 | `subtitle_background_enabled` | 必须是 boolean |
 | `subtitle_background_color` | 必须是合法颜色值 |
-| `subtitle_background_style` | 必须是 `background_style_rectangle` / `background_style_rounded_translucent` |
+| `subtitle_background_style` | 必须是 `rectangle` / `rounded_translucent` |
 
 建议提示但不阻断：
 
 1. 字体缺少当前文案所需字符。
-2. `show_block` 且内容可能超出 viewport。
+2. `block` 且内容可能超出 viewport。
 3. 字幕颜色和描边颜色过于接近。
 4. 字幕颜色和背景颜色过于接近。
 
@@ -1160,26 +1182,15 @@ subtitle_align_v        = middle
 | `subtitle_background_opacity` | 背景透明度 | 自定义背景透明度 |
 | `subtitle_background_corner_radius` | 背景圆角半径 | 自定义圆角大小 |
 | `subtitle_overflow_policy` | 溢出策略 | `overflow_policy_clip` / `overflow_policy_shrink` / `overflow_policy_paginate` / `overflow_policy_scroll` |
-| `subtitle_reading_highlight` | 朗读高亮 | 是否启用逐字或逐词高亮 |
+| `subtitle_reading_highlight_enabled` | 朗读高亮 | 是否启用逐字或逐词高亮 |
 
 ---
 
 ## 15. 历史字段迁移
 
-本文定义的是目标命名和目标语义。
+本文定义的是当前实现的目标命名和目标语义。
 
-历史字段命名与本文可能不一致，例如现有工程中可能存在旧的字体字段、旧的位置字段、旧的诗歌方向字段等。
-
-这些问题不在本文解决。
-
-进入实施阶段前，需要另建迁移设计，明确：
-
-1. 旧字段如何映射到新字段。
-2. 旧任务记录如何兼容读取。
-3. API 是否保留旧字段别名。
-4. WebUI 是否需要灰度切换。
-5. 默认值是否需要按旧任务类型区分。
-6. 是否需要一次性迁移或双写过渡。
+历史字段不做兼容映射，也不保留旧别名。新代码只读取统一 `subtitle_*` 契约；旧任务如果携带旧字段，只能由使用者重新设置，不进入字幕渲染路径。
 
 ---
 
@@ -1187,12 +1198,12 @@ subtitle_align_v        = middle
 
 第一阶段完成后，应能通过配置完成以下场景：
 
-1. 横排 + `show_punctuation` 替换显示。
-2. 横排 + `show_sentence` 替换显示。
-3. 横排 + `show_scroll` 累积滚动。
-4. 横排 + `show_block` 整块显示。
-5. 竖排从右到左 + `show_scroll` 累积滚动。
-6. 竖排从左到右 + `show_scroll` 累积滚动。
+1. 横排 + `punctuation` 替换显示。
+2. 横排 + `sentence` 替换显示。
+3. 横排 + `scroll` 连续滚动。
+4. 横排 + `block` 全文显示。
+5. 竖排从右到左 + `scroll` 连续滚动。
+6. 竖排从左到右 + `scroll` 连续滚动。
 7. 自定义字幕字体、字号、颜色、描边。
 8. 自定义字幕背景开关、颜色、样式。
 9. 自定义四边 margin，并正确得到 viewport。
@@ -1201,4 +1212,53 @@ subtitle_align_v        = middle
 12. 一条 cue 拆成多个 slot 后，仍能作为同一组内容替换或滚动。
 13. 横排行槽的容量宽度和可视宽度能正确区分。
 14. 竖排列槽的容量高度和可视高度能正确区分。
-15. 滚动模式使用累积 display block 定位，而不是只定位当前 cue。
+15. 滚动模式使用已出现的连续 display block 定位，而不是只定位当前 cue。
+
+---
+
+## 17. 待办：固定头部行的入口与策略
+
+## 17.1 当前事实
+
+`scroll` 渲染引擎已经设计了固定头部层：
+
+```text
+标题层 / 作者层：固定显示，不参与滚动和正文 viewport 裁剪
+正文 viewport 层：连续滚动，超出后裁剪
+```
+
+但该行为只在 `subtitle_header_line_count > 0` 时生效。
+
+当前示例任务使用的是：
+
+```text
+subtitle_header_line_count = 0
+```
+
+因此脚本被解析成：
+
+```text
+title = ""
+author = ""
+body_lines = 将进酒 / 唐·李白 / 君不见，... / ...
+```
+
+SRT 中也确实把 `将进酒` 和 `唐·李白` 作为第 1、2 条正文 cue。
+所以它们会随正文一起累积、滑动，并在溢出后被 viewport 裁剪。
+这不是固定头部层被错误裁剪，而是这两行当前没有被声明为头部行。
+
+## 17.2 待办
+
+1. 决定固定头部行的用户入口：
+   - 暴露 `subtitle_header_line_count` 到 WebUI；
+   - 或提供模板开关自动声明“前两行是标题/作者”；
+   - 或由更上层的诗歌模板负责设置该字段。
+
+2. 决定默认策略：
+   - 继续默认 `0`，普通字幕不受影响；
+   - 或在检测到诗歌结构时给用户建议，但不要静默吞掉用户普通文案。
+
+3. 检查头部层溢出策略：
+   - 当前头部层不参与正文 viewport 裁剪；
+   - 超长标题/作者可能会溢出字幕区域；
+   - 后续需要决定是限制宽度、缩字号、拆槽，还是允许用户承担溢出结果。

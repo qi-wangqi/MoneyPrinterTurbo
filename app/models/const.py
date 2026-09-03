@@ -22,6 +22,19 @@ PUNCTUATIONS = [
     "؟",
 ]
 
+# 句末标点：用于“按句末标点切分”模式。
+# 不包含逗号、顿号、冒号等句中停顿标点。
+SENTENCE_ENDINGS = [
+    "?",
+    ".",
+    "!",
+    "…",
+    "？",
+    "。",
+    "！",
+    "؟",
+]
+
 TASK_STATE_FAILED = -1
 TASK_STATE_COMPLETE = 1
 TASK_STATE_PROCESSING = 4

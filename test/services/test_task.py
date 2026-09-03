@@ -882,8 +882,8 @@ class TestTaskService(unittest.TestCase):
                             tm.voice, "get_audio_duration", side_effect=fake_duration
                         ) as get_duration,
                     ):
-                        audio_file, audio_duration, result_sub_maker = tm.generate_audio(
-                            task_id, params, "script"
+                        audio_file, audio_duration, result_sub_maker = (
+                            tm.generate_audio(task_id, params, "script")
                         )
                 finally:
                     shutil.rmtree(task_dir, ignore_errors=True)
@@ -1003,9 +1003,11 @@ class TestTaskService(unittest.TestCase):
                     dict(tm.config.app, subtitle_provider="whisper"),
                 ),
                 patch.object(
-                    tm.subtitle, "create", side_effect=fake_whisper_create
+                    tm.subtitles.srt,
+                    "create",
+                    side_effect=fake_whisper_create,
                 ) as create,
-                patch.object(tm.subtitle, "correct") as correct,
+                patch.object(tm.subtitles.srt, "correct") as correct,
             ):
                 subtitle_path = tm.generate_subtitle(
                     task_id=task_id,
@@ -1048,7 +1050,7 @@ class TestTaskService(unittest.TestCase):
                     dict(tm.config.app, subtitle_provider="edge"),
                 ),
                 patch.object(tm.voice, "create_subtitle") as create_subtitle,
-                patch.object(tm.subtitle, "create") as whisper_create,
+                patch.object(tm.subtitles.srt, "create") as whisper_create,
             ):
                 subtitle_path = tm.generate_subtitle(
                     task_id=task_id,
@@ -1088,8 +1090,8 @@ class TestTaskService(unittest.TestCase):
                     dict(tm.config.app, subtitle_provider="edge"),
                 ),
                 patch.object(tm.voice, "create_subtitle") as create_subtitle,
-                patch.object(tm.subtitle, "create") as whisper_create,
-                patch.object(tm.subtitle, "correct") as whisper_correct,
+                patch.object(tm.subtitles.srt, "create") as whisper_create,
+                patch.object(tm.subtitles.srt, "correct") as whisper_correct,
             ):
                 subtitle_path = tm.generate_subtitle(
                     task_id=task_id,
@@ -1106,15 +1108,15 @@ class TestTaskService(unittest.TestCase):
         whisper_create.assert_not_called()
         whisper_correct.assert_not_called()
 
-    def test_generate_subtitle_fails_for_poetry_when_edge_has_no_output(self):
-        """唐诗模式不能在 Edge 字幕失败后继续消耗素材与合成资源。"""
-        task_id = "test-poetry-edge-subtitle-without-output"
+    def test_generate_subtitle_fails_for_line_cues_when_edge_has_no_output(self):
+        """行 cue 模式不能在 Edge 字幕失败后继续消耗素材与合成资源。"""
+        task_id = "test-line-cue-edge-subtitle-without-output"
         task_dir = utils.task_dir(task_id)
         params = VideoParams(
-            video_subject="poetry",
+            video_subject="line cues",
             video_script="【塞下曲】\n唐 · 卢纶\n林暗草惊风",
             subtitle_enabled=True,
-            subtitle_style="poetry",
+            subtitle_show_mode="scroll",
         )
 
         try:
@@ -1141,7 +1143,7 @@ class TestTaskService(unittest.TestCase):
         mark_task_failed.assert_called_once_with(
             task_id,
             "subtitle",
-            "Edge subtitles did not produce timed cues for poetry mode",
+            "Edge subtitles did not produce timed cues for line-cue mode",
         )
 
     def test_start_returns_each_intermediate_result(self):
@@ -1197,6 +1199,30 @@ class TestTaskService(unittest.TestCase):
 
                 self.assertEqual(result, expected)
                 generate_final.assert_not_called()
+
+    def test_start_uses_configured_subtitle_header_line_count(self):
+        params = VideoParams(
+            video_subject="Header lines",
+            subtitle_header_line_count=1,
+        )
+
+        with (
+            patch.object(tm, "generate_script", return_value="generated script"),
+            patch.object(tm, "generate_terms", return_value=["coffee"]),
+            patch.object(tm, "save_script_data"),
+            patch.object(tm.subtitles.script, "parse_script") as parse_script,
+            patch.object(tm.sm.state, "update_task"),
+        ):
+            result = tm.start("header-line-count", params, stop_at="terms")
+
+        self.assertEqual(
+            result,
+            {"script": "generated script", "terms": ["coffee"]},
+        )
+        parse_script.assert_called_once_with(
+            "generated script",
+            header_line_count=1,
+        )
 
     def test_start_forwards_trusted_server_file_flag_to_audio_stage(self):
         params = VideoParams(video_subject="CLI custom audio")
@@ -1407,9 +1433,24 @@ class TestTaskService(unittest.TestCase):
                 ),
             ),
             patch.object(service, "is_configured", return_value=True),
-            patch.object(type(service), "auto_upload", new_callable=PropertyMock, return_value=True),
-            patch.object(type(service), "platforms", new_callable=PropertyMock, return_value=["youtube"]),
-            patch.object(type(service), "youtube_privacy_status", new_callable=PropertyMock, return_value="unlisted"),
+            patch.object(
+                type(service),
+                "auto_upload",
+                new_callable=PropertyMock,
+                return_value=True,
+            ),
+            patch.object(
+                type(service),
+                "platforms",
+                new_callable=PropertyMock,
+                return_value=["youtube"],
+            ),
+            patch.object(
+                type(service),
+                "youtube_privacy_status",
+                new_callable=PropertyMock,
+                return_value="unlisted",
+            ),
             patch.object(
                 tm.llm,
                 "generate_social_metadata",
@@ -1495,9 +1536,24 @@ class TestTaskService(unittest.TestCase):
                 return_value=(["final.mp4"], ["combined.mp4"], []),
             ),
             patch.object(service, "is_configured", return_value=True),
-            patch.object(type(service), "auto_upload", new_callable=PropertyMock, return_value=True),
-            patch.object(type(service), "platforms", new_callable=PropertyMock, return_value=["tiktok"]),
-            patch.object(type(service), "youtube_privacy_status", new_callable=PropertyMock, return_value="private"),
+            patch.object(
+                type(service),
+                "auto_upload",
+                new_callable=PropertyMock,
+                return_value=True,
+            ),
+            patch.object(
+                type(service),
+                "platforms",
+                new_callable=PropertyMock,
+                return_value=["tiktok"],
+            ),
+            patch.object(
+                type(service),
+                "youtube_privacy_status",
+                new_callable=PropertyMock,
+                return_value="private",
+            ),
             patch.object(tm.upload_post, "cross_post_video") as cross_post,
             patch.object(tm.sm, "state", state),
             patch.object(
@@ -1593,9 +1649,24 @@ class TestTaskService(unittest.TestCase):
                 return_value=(["final.mp4"], ["combined.mp4"], []),
             ),
             patch.object(service, "is_configured", return_value=True),
-            patch.object(type(service), "auto_upload", new_callable=PropertyMock, return_value=True),
-            patch.object(type(service), "platforms", new_callable=PropertyMock, return_value=["tiktok"]),
-            patch.object(type(service), "youtube_privacy_status", new_callable=PropertyMock, return_value="private"),
+            patch.object(
+                type(service),
+                "auto_upload",
+                new_callable=PropertyMock,
+                return_value=True,
+            ),
+            patch.object(
+                type(service),
+                "platforms",
+                new_callable=PropertyMock,
+                return_value=["tiktok"],
+            ),
+            patch.object(
+                type(service),
+                "youtube_privacy_status",
+                new_callable=PropertyMock,
+                return_value="private",
+            ),
             patch.object(tm.sm, "state", state),
             patch.object(tm._cross_post_slots, "acquire", return_value=False),
             patch.object(tm._cross_post_executor, "submit") as submit,
@@ -2230,14 +2301,11 @@ class TestTaskService(unittest.TestCase):
             bgm_file="",
             bgm_volume=0.2,
             subtitle_enabled=True,
-            subtitle_position="bottom",
-            custom_position=70.0,
-            font_name="MicrosoftYaHeiBold.ttc",
-            text_fore_color="#FFFFFF",
-            text_background_color=True,
-            font_size=60,
-            stroke_color="#000000",
-            stroke_width=1.5,
+            subtitle_font="MicrosoftYaHeiBold.ttc",
+            subtitle_text_color="#FFFFFF",
+            subtitle_font_size=60,
+            subtitle_stroke_color="#000000",
+            subtitle_stroke_width=1.5,
             n_threads=2,
             paragraph_number=1,
         )

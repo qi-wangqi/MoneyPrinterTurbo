@@ -27,6 +27,7 @@ from openai import OpenAI
 
 from app.config import config
 from app.utils import utils
+from app.services.subtitles.models import SubtitleCueSegmentation
 
 _DEFAULT_EDGE_TTS_TIMEOUT_SECONDS = 30.0
 _MIMO_DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
@@ -2114,7 +2115,7 @@ def create_subtitle(
     sub_maker: SubMaker,
     text: str,
     subtitle_file: str,
-    segmentation: str = "punctuation",
+    segmentation: SubtitleCueSegmentation = SubtitleCueSegmentation.punctuation,
 ):
     """
     优化字幕文件
@@ -2123,11 +2124,15 @@ def create_subtitle(
     3. 生成新的字幕文件
     """
     text = _format_text(text)
-    script_lines = (
-        utils.split_string_by_lines(text)
-        if segmentation == "line"
-        else utils.split_string_by_punctuations(text)
-    )
+    segmentation = SubtitleCueSegmentation(segmentation)
+    if segmentation == SubtitleCueSegmentation.physical_line:
+        script_lines = utils.split_string_by_lines(text)
+    elif segmentation == SubtitleCueSegmentation.sentence:
+        script_lines = utils.split_string_by_sentences(text)
+    else:
+        # 按标点替换显示时也保留标点；匹配层会忽略符号，因此不会破坏
+        # Edge cue / legacy submaker 的聚合。
+        script_lines = utils.split_string_by_punctuations(text, keep_punctuation=True)
     try:
         if hasattr(sub_maker, "cues") and sub_maker.cues:
             sub_items = _build_subtitle_items_from_edge_cues(sub_maker, script_lines)

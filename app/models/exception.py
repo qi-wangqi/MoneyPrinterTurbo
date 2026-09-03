@@ -29,3 +29,7 @@ class HttpException(Exception):
 
 class FileNotFoundException(Exception):
     pass
+
+
+class SubtitleException(ValueError):
+    """字幕脚本、时间轴或排版无法满足渲染契约时抛出。"""

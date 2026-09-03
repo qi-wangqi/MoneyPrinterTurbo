@@ -19,7 +19,7 @@ from app.utils import utils
 
 # 用户选择了缺字形的字体（例如只覆盖西文的字体渲染中文文案）时，按这个
 # 确定性顺序回退，避免 Pillow 把缺字形字符画成透明像素导致“字幕消失”。
-FONT_FALLBACKS = (
+SUBTITLE_FONT_FALLBACKS = (
     "MicrosoftYaHeiBold.ttc",
     "STHeitiMedium.ttc",
     "MicrosoftYaHeiNormal.ttc",
@@ -71,18 +71,18 @@ def font_supports_text(font_path: str, text: str) -> bool:
     return _font_supports_sample(font_path, sample)
 
 
-def resolve_font_path(font_name: str, text: str) -> str:
+def resolve_font_path(font: str, text: str) -> str:
     """根据字幕文案解析可用字体；缺字形时按确定性顺序回退。
 
     用户可能保存了仅覆盖西文的字体（例如 BeVietnamPro），却用来渲染中文
     文案。这里在合成前检测字形覆盖，自动回退到内置中文字体并记录日志，
     避免静默输出看不见的字幕。
     """
-    base_path = os.path.join(utils.font_dir(), font_name)
+    base_path = os.path.join(utils.font_dir(), font)
     resolved = base_path
     if not font_supports_text(base_path, text):
-        for candidate in dict.fromkeys([*FONT_FALLBACKS, font_name]):
-            if candidate == font_name:
+        for candidate in dict.fromkeys([*SUBTITLE_FONT_FALLBACKS, font]):
+            if candidate == font:
                 continue
             candidate_path = os.path.join(utils.font_dir(), candidate)
             if not os.path.isfile(candidate_path):
@@ -90,7 +90,7 @@ def resolve_font_path(font_name: str, text: str) -> str:
             if font_supports_text(candidate_path, text):
                 logger.warning(
                     "subtitle font cannot render the script text; "
-                    f"fallback from {font_name} to {candidate}"
+                    f"fallback from {font} to {candidate}"
                 )
                 resolved = candidate_path
                 break
@@ -98,8 +98,7 @@ def resolve_font_path(font_name: str, text: str) -> str:
             # 没有任何候选字体覆盖全部字形时保留原选择，由上层继续渲染；
             # 宁可缺字形也不中断任务。
             logger.warning(
-                "no built-in fallback font can render the script text; "
-                f"keep {font_name}"
+                f"no built-in fallback font can render the script text; keep {font}"
             )
 
     if os.name == "nt":
@@ -135,7 +134,9 @@ def line_height(font: ImageFont.FreeTypeFont, font_size: int) -> int:
     return height
 
 
-def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> float:
+def text_width(
+    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont
+) -> float:
     """用给定字体测量单行文本宽度（换行与居中都要用它，口径必须统一）。"""
     return draw.textlength(text, font=font)
 
@@ -234,16 +235,16 @@ def wrap_text(
 
 # ---- 竖排度量 -----------------------------------------------------------
 # 竖排以“字高 em”为推进单位；标点压缩到半格并靠上偏右，紧贴前一个字。
-CHAR_HEIGHT_RATIO = 1.32  # 每个汉字占用的字高（含行间呼吸空间），以字号为单位
-PUNCT_ADVANCE_RATIO = 0.55  # 竖排中标点占用的字高比例
-VERTICAL_COMPACT_PUNCT = set("，。！？；：、,.!?;:")
+SUBTITLE_CHAR_HEIGHT_RATIO = 1.32  # 每个汉字占用的字高（含行间呼吸空间），以字号为单位
+SUBTITLE_PUNCT_ADVANCE_RATIO = 0.55  # 竖排中标点占用的字高比例
+SUBTITLE_VERTICAL_COMPACT_PUNCT = set("，。！？；：、,.!?;:")
 
 
 def char_advance_em(char: str) -> float:
     """竖排里单个字符占用的字高（以字号为单位）。"""
-    if char in VERTICAL_COMPACT_PUNCT:
-        return PUNCT_ADVANCE_RATIO
-    return CHAR_HEIGHT_RATIO
+    if char in SUBTITLE_VERTICAL_COMPACT_PUNCT:
+        return SUBTITLE_PUNCT_ADVANCE_RATIO
+    return SUBTITLE_CHAR_HEIGHT_RATIO
 
 
 def vertical_advance_em(text: str) -> float:

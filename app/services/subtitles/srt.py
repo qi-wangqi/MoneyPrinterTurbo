@@ -17,6 +17,7 @@ from loguru import logger
 
 from app.config import config
 from app.utils import utils
+from app.services.subtitles.models import SubtitleCueSegmentation
 
 model_size = config.whisper.get("model_size", "large-v3")
 device = config.whisper.get("device", "cpu")
@@ -28,7 +29,9 @@ model = None
 def create(audio_file, subtitle_file: str = ""):
     global model
     if WhisperModel is None:
-        logger.warning("faster_whisper not available, skipping whisper subtitle generation")
+        logger.warning(
+            "faster_whisper not available, skipping whisper subtitle generation"
+        )
         return ""
     if not model:
         model_path = f"{utils.root_dir()}/models/whisper-{model_size}"
@@ -205,14 +208,24 @@ def similarity(a, b):
     return 1 - (distance / max_length)
 
 
-def correct(subtitle_file, video_script, segmentation: str = "punctuation"):
+def correct(
+    subtitle_file,
+    video_script,
+    segmentation: SubtitleCueSegmentation = SubtitleCueSegmentation.punctuation,
+):
     subtitle_items = file_to_subtitles(subtitle_file)
     normalized_script = utils.normalize_script_for_subtitle_matching(video_script)
-    script_lines = (
-        utils.split_string_by_lines(normalized_script)
-        if segmentation == "line"
-        else utils.split_string_by_punctuations(normalized_script)
-    )
+    segmentation = SubtitleCueSegmentation(segmentation)
+    if segmentation == SubtitleCueSegmentation.physical_line:
+        script_lines = utils.split_string_by_lines(normalized_script)
+    elif segmentation == SubtitleCueSegmentation.sentence:
+        script_lines = utils.split_string_by_sentences(normalized_script)
+    else:
+        # 与 Edge 字幕生成保持一致：punctuation 模式保留标点，sentence
+        # 模式按完整句切分。Whisper 转写结果也要走同一套文本契约。
+        script_lines = utils.split_string_by_punctuations(
+            normalized_script, keep_punctuation=True
+        )
 
     corrected = False
     new_subtitle_items = []

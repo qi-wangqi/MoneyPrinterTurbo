@@ -1,8 +1,7 @@
-"""字幕渲染的数据模型：枚举、配置值对象与纯数据结构。
+"""字幕内部领域模型。
 
-本模块只存放“是什么”，不存放“怎么画”。渲染引擎（engine）、排版
-（layout）、绘制（painter）共享这里的数据结构，保证各阶段之间的接口
-是数据而不是散落的参数。
+这里存放字幕渲染过程中使用的纯数据结构，不包含渲染行为，也不对外
+暴露成任务参数。用户可配置的字段和枚举仍由 app/models/schema.py 定义。
 """
 
 from __future__ import annotations
@@ -11,68 +10,17 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-class SubtitleLayoutError(ValueError):
-    """字幕内容无法在给定视窗内排版时抛出。"""
+class SubtitleCueSegmentation(str, Enum):
+    """SRT 生成层的 cue 切分策略；不是用户可见的显示模式。"""
 
-
-class Direction(str, Enum):
-    """文字流动方向，决定 cue 的排列与滚动轴。"""
-
-    HORIZONTAL = "horizontal"  # 横排：正文行自上而下排列，溢出时向上滚动
-    VERTICAL_RTL = "vertical_rtl"  # 竖排：新列自右向左进入，旧列从左侧裁掉
-    VERTICAL_LTR = "vertical_ltr"  # 竖排：新列自左向右进入，旧列从右侧裁掉
-
-    @property
-    def is_vertical(self) -> bool:
-        """竖排方向返回 True；横排返回 False。"""
-        return self in (Direction.VERTICAL_RTL, Direction.VERTICAL_LTR)
-
-
-class ShowMode(str, Enum):
-    """字幕显示模式，同时决定 cue 切分方式（生成侧）与显示行为（渲染侧）。"""
-
-    PUNCTUATION = "punctuation"  # 按标点切分 cue，逐条替换显示
-    SENTENCE = "sentence"  # 按完整句切分 cue，逐条替换显示
-    LINE = "line"  # 按换行切分 cue（与诗歌正文行对齐）
-    SCROLL = "scroll"  # 累积式：cue 按方向锚点滑动，超出视窗裁剪
-    BLOCK = "block"  # 整块常驻：全文作为一个块显示，不切分不滚动
-
-    @property
-    def is_replace_style(self) -> bool:
-        """替换式模式（标点/整句）在渲染侧共用同一套逐条替换行为。"""
-        return self in (ShowMode.PUNCTUATION, ShowMode.SENTENCE)
-
-
-class AlignH(str, Enum):
-    """整块内容在视窗内的水平对齐。"""
-
-    LEFT = "left"
-    CENTER = "center"
-    RIGHT = "right"
-
-
-class AlignV(str, Enum):
-    """整块内容在视窗内的垂直对齐。"""
-
-    TOP = "top"
-    MIDDLE = "middle"
-    BOTTOM = "bottom"
-
-
-class BackgroundStyle(str, Enum):
-    """字幕背景样式。"""
-
-    RECTANGLE = "rectangle"  # 实心矩形
-    ROUNDED_TRANSLUCENT = "rounded_translucent"  # 圆角半透明
+    punctuation = "punctuation"  # 按所有标点切分，用于逐条弹出
+    sentence = "sentence"  # 按句末标点切分，用于逐条弹出
+    physical_line = "physical_line"  # 按物理换行切分，用于连续滚动/固定头部
 
 
 @dataclass(frozen=True)
-class Margin:
-    """字幕边距（百分比）。
-
-    top/bottom 相对视频高度，left/right 相对视频宽度。边距把整幅视频
-    收缩成字幕视窗（viewport），所有模式（包括滚动）都在视窗内排版。
-    """
+class SubtitleMargin:
+    """字幕边距（百分比）。"""
 
     top: float = 0.0
     right: float = 0.0
@@ -81,12 +29,8 @@ class Margin:
 
 
 @dataclass(frozen=True)
-class Viewport:
-    """字幕可用区域（视频坐标系，单位像素）。
-
-    由视频尺寸扣除 margin 得到；slot 与内容块的对齐、溢出锚点都在
-    这个矩形内计算。
-    """
+class SubtitleViewport:
+    """字幕可用区域（视频坐标系，单位像素）。"""
 
     x: float
     y: float
@@ -114,13 +58,8 @@ class SubtitleCue:
 
 
 @dataclass(frozen=True)
-class ScriptInfo:
-    """解析后的脚本文本结构。
-
-    header_line_count > 0 时（诗歌模式），前两行是诗名/作者并作为固定
-    图层渲染，其余行为正文；header_line_count == 0 时（普通模式）全部
-    行都是正文，引擎对“诗歌”没有任何概念。
-    """
+class SubtitleScriptInfo:
+    """解析后的脚本文本结构。"""
 
     title: str
     author: str

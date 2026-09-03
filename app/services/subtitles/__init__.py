@@ -14,8 +14,8 @@
     video_clip = CompositeVideoClip([source_video_clip, *overlays])
 
 模块分层（依赖自上而下）：
-    config   字幕统一配置对象；schema 旧字段只在这里被翻译
-    models   枚举与纯数据结构（Direction / ShowMode / Viewport / Cue）
+    config   字幕统一配置对象；schema 字段在这里转换为渲染配置
+    models   字幕内部领域模型（SubtitleMargin / SubtitleCue / ...）
     script   脚本文本 → 头部行 + 正文行
     srt      SRT 生成（Whisper）、读取与脚本校正
     cues     SRT → SubtitleCue，及 cue/脚本一致性校验
@@ -23,9 +23,14 @@
     layout   纯几何：视窗、槽切分、对齐公式
     painter  PIL 绘制原语：文字、描边、背景、透明度
     engine   时间轴：replace / scroll / block 三种显示行为
+
+公共契约放在 app/models/schema.py；SubtitleException 放在
+app/models/exception.py，供流水线和 WebUI 统一识别字幕前置校验错误。
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from moviepy import VideoClip
 
@@ -35,10 +40,13 @@ from app.services.subtitles import engine as engine_module
 from app.services.subtitles import fonts as fonts_module
 from app.services.subtitles import script as script_module
 
+if TYPE_CHECKING:
+    from app.models.schema import VideoParams
+
 
 def build_overlays(
     subtitle_path: str,
-    params,
+    params: "VideoParams",
     video_width: int,
     video_height: int,
     audio_duration: float,
@@ -51,16 +59,16 @@ def build_overlays(
     """
     subtitle_config = config_module.SubtitleConfig.from_video_params(params)
     script = script_module.parse_script(
-        params.video_script, subtitle_config.header_line_count
+        params.video_script, subtitle_config.subtitle_header_line_count
     )
     cues = cues_module.read_cues(subtitle_path)
-    if subtitle_config.header_line_count > 0:
-        # 带头部行的模式（如诗歌）要求 cue 与脚本行一一对应，错位会让
+    if subtitle_config.subtitle_header_line_count > 0:
+        # 带头部行的模式要求 cue 与脚本行一一对应，错位会让
         # 逐字高亮和滚动节奏全部失准，必须显式失败。
         cues_module.validate_cues(cues, script)
 
     font_path = fonts_module.resolve_font_path(
-        subtitle_config.font_name, params.video_script
+        subtitle_config.subtitle_font, params.video_script
     )
     return engine_module.build_overlays(
         config=subtitle_config,

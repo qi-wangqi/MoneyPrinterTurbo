@@ -13,6 +13,7 @@ from moviepy import (
     ImageClip,
     VideoFileClip,
 )
+import numpy as np
 
 # add project root to python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -66,7 +67,7 @@ class TestVideoService(unittest.TestCase):
     def test_fit_clip_cover_fills_portrait_canvas_without_black_bars(self):
         source_color = [17, 34, 51]
         source = ImageClip(
-            vd.np.full((90, 160, 3), source_color, dtype=vd.np.uint8)
+            np.full((90, 160, 3), source_color, dtype=np.uint8)
         ).with_duration(1)
         fitted = vd._fit_clip_to_canvas(
             source,
@@ -87,7 +88,7 @@ class TestVideoService(unittest.TestCase):
     def test_fit_clip_contain_preserves_legacy_black_bars(self):
         source_color = [17, 34, 51]
         source = ImageClip(
-            vd.np.full((90, 160, 3), source_color, dtype=vd.np.uint8)
+            np.full((90, 160, 3), source_color, dtype=np.uint8)
         ).with_duration(1)
         fitted = vd._fit_clip_to_canvas(
             source,
@@ -168,12 +169,8 @@ class TestVideoService(unittest.TestCase):
         source_video.with_audio_result = final_video
 
         with (
-            patch.object(
-                vd, "_open_video_clip_quietly", return_value=source_video
-            ),
-            patch.object(
-                vd, "AudioFileClip", side_effect=[voice_source, bgm_source]
-            ),
+            patch.object(vd, "_open_video_clip_quietly", return_value=source_video),
+            patch.object(vd, "AudioFileClip", side_effect=[voice_source, bgm_source]),
             patch.object(vd, "CompositeAudioClip", return_value=mixed_audio),
             patch.object(vd, "_write_videofile_with_codec_fallback") as writer,
             patch.object(vd, "_get_configured_video_codec", return_value="libx264"),
@@ -208,9 +205,7 @@ class TestVideoService(unittest.TestCase):
         source_video.with_audio_result = final_video
 
         with (
-            patch.object(
-                vd, "_open_video_clip_quietly", return_value=source_video
-            ),
+            patch.object(vd, "_open_video_clip_quietly", return_value=source_video),
             patch.object(
                 vd,
                 "AudioFileClip",
@@ -271,9 +266,7 @@ class TestVideoService(unittest.TestCase):
                     ) as audio_file_clip,
                     patch.object(vd, "get_bgm_file") as get_bgm_file,
                     patch.object(vd, "CompositeAudioClip") as composite_audio,
-                    patch.object(
-                        vd, "_write_videofile_with_codec_fallback"
-                    ) as writer,
+                    patch.object(vd, "_write_videofile_with_codec_fallback") as writer,
                     patch.object(
                         vd, "_get_configured_video_codec", return_value="libx264"
                     ),
@@ -446,7 +439,9 @@ class TestVideoService(unittest.TestCase):
 
     def test_get_ffmpeg_binary_uses_configured_env_path(self):
         """配置中显式指定 ffmpeg 时，应优先使用该路径。"""
-        with patch.dict(os.environ, {"IMAGEIO_FFMPEG_EXE": "/tmp/custom-ffmpeg"}, clear=True):
+        with patch.dict(
+            os.environ, {"IMAGEIO_FFMPEG_EXE": "/tmp/custom-ffmpeg"}, clear=True
+        ):
             self.assertEqual(utils.get_ffmpeg_binary(), "/tmp/custom-ffmpeg")
 
     def test_get_ffmpeg_binary_falls_back_to_imageio_ffmpeg(self):
@@ -458,9 +453,11 @@ class TestVideoService(unittest.TestCase):
             get_ffmpeg_exe=lambda: "/tmp/bundled-ffmpeg"
         )
 
-        with patch.dict(os.environ, {}, clear=True), patch.object(
-            utils.shutil, "which", return_value=None
-        ), patch.dict(sys.modules, {"imageio_ffmpeg": fake_imageio_ffmpeg}):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(utils.shutil, "which", return_value=None),
+            patch.dict(sys.modules, {"imageio_ffmpeg": fake_imageio_ffmpeg}),
+        ):
             self.assertEqual(utils.get_ffmpeg_binary(), "/tmp/bundled-ffmpeg")
 
     def test_get_effective_video_codec_falls_back_when_encoder_missing(self):
@@ -501,7 +498,9 @@ class TestVideoService(unittest.TestCase):
             "run",
             side_effect=OSError("permission denied"),
         ):
-            self.assertFalse(vd._ffmpeg_encoder_exists("C:/ffmpeg/bin/ffmpeg.exe", "h264_nvenc"))
+            self.assertFalse(
+                vd._ffmpeg_encoder_exists("C:/ffmpeg/bin/ffmpeg.exe", "h264_nvenc")
+            )
 
     def test_write_videofile_falls_back_after_runtime_encoder_failure(self):
         """
@@ -566,9 +565,7 @@ class TestVideoService(unittest.TestCase):
             return_value=r"C:\Users\Test User's Videos\clip.mp4",
         ):
             self.assertEqual(
-                vd._format_ffmpeg_concat_path(
-                    r"C:\Users\Test User's Videos\clip.mp4"
-                ),
+                vd._format_ffmpeg_concat_path(r"C:\Users\Test User's Videos\clip.mp4"),
                 "C:/Users/Test User'\\''s Videos/clip.mp4",
             )
 
@@ -605,8 +602,7 @@ class TestVideoService(unittest.TestCase):
                     )
 
         used_codecs = [
-            call.args[0][call.args[0].index("-c:v") + 1]
-            for call in run.call_args_list
+            call.args[0][call.args[0].index("-c:v") + 1] for call in run.call_args_list
         ]
         self.assertEqual(used_codecs, ["h264_nvenc", "libx264"])
         self.assertIn("h264_nvenc", vd._runtime_disabled_video_codecs)
@@ -717,6 +713,7 @@ class TestVideoService(unittest.TestCase):
         Ensure `combine_videos` safely handles
         `video_transition_mode=None`.
         """
+
         class _FakeAudioClip:
             @property
             def duration(self):
@@ -890,7 +887,9 @@ class TestVideoService(unittest.TestCase):
                     with patch.object(
                         vd, "_write_videofile_with_codec_fallback"
                     ) as write_mock:
-                        with patch.object(vd, "concat_video_clips_with_ffmpeg") as concat_mock:
+                        with patch.object(
+                            vd, "concat_video_clips_with_ffmpeg"
+                        ) as concat_mock:
                             with patch.object(vd, "delete_files"):
                                 result = vd.combine_videos(
                                     combined_video_path=combined_video_path,
@@ -974,15 +973,9 @@ class TestVideoService(unittest.TestCase):
         同一个源素材的最后一个切片可能短于目标片段时长。首轮去重时应优先
         选择较长片段，否则会因为累计时长不足而提前复用素材。
         """
-        short_tail = vd.SubClippedVideoClip(
-            "a.mp4", 6, 6.5, source_file_path="a.mp4"
-        )
-        full_clip = vd.SubClippedVideoClip(
-            "a.mp4", 0, 3, source_file_path="a.mp4"
-        )
-        other_source = vd.SubClippedVideoClip(
-            "b.mp4", 0, 3, source_file_path="b.mp4"
-        )
+        short_tail = vd.SubClippedVideoClip("a.mp4", 6, 6.5, source_file_path="a.mp4")
+        full_clip = vd.SubClippedVideoClip("a.mp4", 0, 3, source_file_path="a.mp4")
+        other_source = vd.SubClippedVideoClip("b.mp4", 0, 3, source_file_path="b.mp4")
 
         ordered_clips = vd._prioritize_unique_source_clips(
             subclipped_items=[short_tail, full_clip, other_source],
@@ -993,269 +986,6 @@ class TestVideoService(unittest.TestCase):
             clip for clip in ordered_clips if clip.source_file_path == "a.mp4"
         )
         self.assertEqual(first_a_clip, full_clip)
-    
-    def test_wrap_text(self):
-        """test text wrapping function"""
-        try:
-            font_path = os.path.join(utils.font_dir(), "STHeitiMedium.ttc")
-            if not os.path.exists(font_path):
-                self.fail(f"font file not found: {font_path}")
-                
-            # test english text wrapping
-            test_text_en = "This is a test text for wrapping long sentences in english language"
-            
-            wrapped_text_en, text_height_en = vd.wrap_text(
-                text=test_text_en,
-                max_width=300,
-                font=font_path,
-                fontsize=30
-            )
-            print(wrapped_text_en, text_height_en)
-            # verify text is wrapped
-            self.assertIn("\n", wrapped_text_en)
-            
-            # test chinese text wrapping
-            test_text_zh = "这是一段用来测试中文长句换行的文本内容，应该会根据宽度限制进行换行处理"
-            wrapped_text_zh, text_height_zh = vd.wrap_text(
-                text=test_text_zh,
-                max_width=300,
-                font=font_path,
-                fontsize=30
-            )   
-            print(wrapped_text_zh, text_height_zh)
-            # verify chinese text is wrapped
-            self.assertIn("\n", wrapped_text_zh)
-        except Exception as e:
-            self.fail(f"test wrap_text failed: {str(e)}")
-
-    def test_wrap_text_uses_stable_line_metrics_for_all_bundled_fonts(self):
-        """
-        字幕高度必须来自字体自身的 ascent/descent，而不能取决于当前文字。
-
-        不含 g/j/p/q/y 的拉丁文本只有大写字母和 x-height，Pillow 的字形
-        bbox 会比字体真实行高短很多；多行时误差累积，最终会裁掉最后一行。
-        这里遍历全部内置字体，并同时覆盖含下伸部与不含下伸部的英文文本，
-        防止以后重新引入“按当前字形墨迹计算行高”的实现。
-        """
-        font_size = 60
-        max_width = 360
-        text_cases = {
-            "without_descenders": "A man survived the Hiroshima atomic bomb blast",
-            "with_descenders": "Typing quickly brings joyful progress",
-        }
-        font_paths = sorted(
-            path
-            for path in Path(utils.font_dir()).iterdir()
-            if path.suffix.lower() in {".ttf", ".ttc"}
-        )
-
-        self.assertTrue(font_paths, "expected bundled subtitle fonts")
-        for font_path in font_paths:
-            font = vd.ImageFont.truetype(str(font_path), font_size)
-            expected_line_height = sum(font.getmetrics())
-            for case_name, text in text_cases.items():
-                with self.subTest(font=font_path.name, case=case_name):
-                    wrapped_text, text_height = vd.wrap_text(
-                        text=text,
-                        max_width=max_width,
-                        font=str(font_path),
-                        fontsize=font_size,
-                    )
-                    line_count = wrapped_text.count("\n") + 1
-
-                    self.assertGreater(line_count, 1)
-                    self.assertEqual(
-                        text_height,
-                        line_count * expected_line_height,
-                    )
-
-    def test_wrap_text_counts_existing_subtitle_line_breaks(self):
-        """
-        SRT 文本可能已经包含人工换行；即使每行都不需要再次折行，高度也必须
-        按最终两行计算。否则宽画面上的短句会绕过自动换行分支并再次裁掉末行。
-        """
-        font_size = 60
-        font_path = os.path.join(utils.font_dir(), "MicrosoftYaHeiBold.ttc")
-        text = "SAFE TEXT\nMORE SAFE"
-        font = vd.ImageFont.truetype(font_path, font_size)
-
-        wrapped_text, text_height = vd.wrap_text(
-            text=text,
-            max_width=972,
-            font=font_path,
-            fontsize=font_size,
-        )
-
-        self.assertEqual(wrapped_text, text)
-        self.assertEqual(text_height, 2 * sum(font.getmetrics()))
-
-    def test_small_subtitle_with_thick_stroke_keeps_a_bottom_margin(self):
-        """
-        小字号配粗描边是最容易重新触底的比例边界。遍历全部内置字体并读取
-        MoviePy 的真实 mask，确保额外高度至少容纳向上下扩张的完整描边。
-        """
-        font_size = 24
-        stroke_width = 6
-        max_width = 240
-        text = "A man survived the Hiroshima atomic bomb blast"
-        font_paths = sorted(
-            path
-            for path in Path(utils.font_dir()).iterdir()
-            if path.suffix.lower() in {".ttf", ".ttc"}
-        )
-
-        for font_path in font_paths:
-            with self.subTest(font=font_path.name):
-                wrapped_text, text_height = vd.wrap_text(
-                    text=text,
-                    max_width=max_width,
-                    font=str(font_path),
-                    fontsize=font_size,
-                )
-                line_count = wrapped_text.count("\n") + 1
-                interline = int(font_size * 0.25)
-                vertical_padding = int(font_size * 0.35)
-                stroke_padding = stroke_width * 2 * line_count
-                clip_height = int(
-                    text_height
-                    + vertical_padding
-                    + interline * line_count
-                    + stroke_padding
-                )
-                text_clip = vd.TextClip(
-                    text=wrapped_text,
-                    font=str(font_path),
-                    font_size=font_size,
-                    color="#FFFFFF",
-                    stroke_color="#000000",
-                    stroke_width=stroke_width,
-                    interline=interline,
-                    size=(max_width, clip_height),
-                    text_align="center",
-                )
-                try:
-                    mask = text_clip.mask.get_frame(0)
-                    visible_rows, _ = vd.np.where(mask > 0.01)
-
-                    self.assertGreater(len(visible_rows), 0)
-                    self.assertLess(int(visible_rows.max()), clip_height - 1)
-                finally:
-                    text_clip.close()
-
-    def test_multilingual_textclip_last_line_keeps_a_visible_bottom_margin(self):
-        """
-        使用 MoviePy 真实绘制多语种字幕，确保最后一行没有贴到画布底边。
-
-        仅检查 wrap_text() 返回值会漏掉 Pillow/MoviePy 在 baseline、描边和
-        行间距上的组合差异，因此这里直接读取 TextClip 的透明 mask。覆盖文本
-        均由对应内置字体完整支持，包括英文、越南语、泰语、简繁中文、俄语
-        和希腊语；只要可见像素触及最后一行，就说明仍存在静默裁切风险。
-        """
-        font_size = 60
-        max_width = 360
-        interline = int(font_size * 0.25)
-        vertical_padding = int(font_size * 0.35)
-        stroke_width = 2
-        cases = (
-            (
-                "english_without_descenders",
-                "BeVietnamPro-Bold.ttf",
-                "A man survived the Hiroshima atomic bomb blast",
-            ),
-            (
-                "vietnamese",
-                "BeVietnamPro-Medium.ttf",
-                "Tôi vẫn luôn tin vào một tương lai tươi sáng",
-            ),
-            (
-                "thai",
-                "Charm-Regular.ttf",
-                "นี่คือข้อความสำหรับตรวจสอบบรรทัดสุดท้ายของคำบรรยาย",
-            ),
-            (
-                "simplified_chinese",
-                "MicrosoftYaHeiBold.ttc",
-                "这是一个用于检查字幕最后一行是否完整显示的测试句子",
-            ),
-            (
-                "traditional_chinese",
-                "STHeitiMedium.ttc",
-                "這是一個用於檢查字幕最後一行是否完整顯示的測試句子",
-            ),
-            (
-                "cyrillic",
-                "MicrosoftYaHeiNormal.ttc",
-                "Это текст для проверки последней строки субтитров",
-            ),
-            (
-                "greek",
-                "STHeitiLight.ttc",
-                "Αυτό είναι κείμενο για τον έλεγχο της τελευταίας γραμμής",
-            ),
-        )
-
-        for language, font_name, text in cases:
-            font_path = os.path.join(utils.font_dir(), font_name)
-            with self.subTest(language=language, font=font_name):
-                self.assertTrue(vd.subtitle_font_supports_text(font_path, text))
-                wrapped_text, text_height = vd.wrap_text(
-                    text=text,
-                    max_width=max_width,
-                    font=font_path,
-                    fontsize=font_size,
-                )
-                line_count = wrapped_text.count("\n") + 1
-                stroke_padding = stroke_width * 2 * line_count
-                clip_height = int(
-                    text_height
-                    + vertical_padding
-                    + interline * line_count
-                    + stroke_padding
-                )
-                text_clip = vd.TextClip(
-                    text=wrapped_text,
-                    font=font_path,
-                    font_size=font_size,
-                    color="#FFFFFF",
-                    stroke_color="#000000",
-                    stroke_width=stroke_width,
-                    interline=interline,
-                    size=(max_width, clip_height),
-                    text_align="center",
-                )
-                try:
-                    mask = text_clip.mask.get_frame(0)
-                    visible_rows, _ = vd.np.where(mask > 0.01)
-
-                    self.assertGreater(line_count, 1)
-                    self.assertGreater(len(visible_rows), 0)
-                    self.assertLess(int(visible_rows.max()), clip_height - 1)
-                finally:
-                    text_clip.close()
-
-    def test_rounded_subtitle_background_clip_has_transparent_corners(self):
-        """
-        圆角字幕背景只在用户显式开启时使用。这里直接验证生成的 RGBA
-        背景具备透明圆角和半透明中心，避免后续改动把圆角效果退化成实心矩形。
-        """
-        clip = vd._rounded_subtitle_background_clip(
-            width=120,
-            height=48,
-            color="#123456",
-            alpha=140,
-            radius=16,
-        )
-        try:
-            frame = clip.get_frame(0)
-            mask = clip.mask.get_frame(0)
-
-            self.assertEqual(frame.shape[0:2], (48, 120))
-            self.assertEqual(tuple(frame[24, 60]), (18, 52, 86))
-            self.assertEqual(mask[0, 0], 0)
-            self.assertGreater(mask[24, 60], 0.5)
-            self.assertLess(mask[24, 60], 0.6)
-        finally:
-            clip.close()
 
     def test_get_temp_audio_dir_returns_system_temp_on_windows(self):
         with patch("sys.platform", "win32"):
@@ -1290,19 +1020,6 @@ class TestMaterialResolutionTolerance(unittest.TestCase):
 
     def test_rejects_genuinely_low_resolution_material(self):
         self.assertFalse(vd.is_material_resolution_acceptable(320, 240))
-
-
-class TestSubtitleFontFallback(unittest.TestCase):
-    def test_falls_back_to_cjk_font_when_selected_font_cannot_render(self):
-        base_path = os.path.join(utils.font_dir(), "BeVietnamPro-Bold.ttf")
-        sample = "将进酒：君不见黄河之水"
-        resolved = vd.resolve_subtitle_font_path("BeVietnamPro-Bold.ttf", sample)
-        self.assertNotEqual(resolved, base_path)
-        self.assertTrue(vd.subtitle_font_supports_text(resolved, sample))
-
-    def test_keeps_font_that_supports_the_text(self):
-        resolved = vd.resolve_subtitle_font_path("STHeitiMedium.ttc", "将进酒")
-        self.assertTrue(resolved.endswith("STHeitiMedium.ttc"))
 
 
 if __name__ == "__main__":

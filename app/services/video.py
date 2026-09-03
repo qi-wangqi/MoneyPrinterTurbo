@@ -37,6 +37,7 @@ from app.services import subtitles
 from app.services.utils import video_effects
 from app.utils import file_security, utils
 
+
 class SubClippedVideoClip:
     def __init__(
         self,
@@ -275,7 +276,9 @@ def _get_temp_audio_dir(output_dir: str) -> str:
     return output_dir
 
 
-def _fallback_write_videofile(clip, output_file: str, failed_codec: str, reason: str, **kwargs):
+def _fallback_write_videofile(
+    clip, output_file: str, failed_codec: str, reason: str, **kwargs
+):
     """
     硬件编码失败后用 libx264 重试，只有重试成功才禁用该硬件编码器。
 
@@ -452,39 +455,40 @@ def _open_video_clip_quietly(video_path: str, audio: bool = False) -> VideoFileC
 def close_clip(clip):
     if clip is None:
         return
-        
+
     try:
         # close main resources
-        if hasattr(clip, 'reader') and clip.reader is not None:
+        if hasattr(clip, "reader") and clip.reader is not None:
             clip.reader.close()
-            
+
         # close audio resources
-        if hasattr(clip, 'audio') and clip.audio is not None:
-            if hasattr(clip.audio, 'reader') and clip.audio.reader is not None:
+        if hasattr(clip, "audio") and clip.audio is not None:
+            if hasattr(clip.audio, "reader") and clip.audio.reader is not None:
                 clip.audio.reader.close()
             del clip.audio
-            
+
         # close mask resources
-        if hasattr(clip, 'mask') and clip.mask is not None:
-            if hasattr(clip.mask, 'reader') and clip.mask.reader is not None:
+        if hasattr(clip, "mask") and clip.mask is not None:
+            if hasattr(clip.mask, "reader") and clip.mask.reader is not None:
                 clip.mask.reader.close()
             del clip.mask
-            
+
         # handle child clips in composite clips
-        if hasattr(clip, 'clips') and clip.clips:
+        if hasattr(clip, "clips") and clip.clips:
             for child_clip in clip.clips:
                 if child_clip is not clip:  # avoid possible circular references
                     close_clip(child_clip)
-            
+
         # clear clip list
-        if hasattr(clip, 'clips'):
+        if hasattr(clip, "clips"):
             clip.clips = []
-            
+
     except Exception as e:
         logger.error(f"failed to close clip: {str(e)}")
-    
+
     del clip
     gc.collect()
+
 
 def delete_files(files: List[str] | str):
     if isinstance(files, str):
@@ -517,9 +521,7 @@ def get_bgm_file(bgm_type: str = "random", bgm_file: str = ""):
         except ValueError as exc:
             # API 请求里的 bgm_file 来自用户输入，只允许解析到用户 BGM 或内置
             # 歌曲目录，阻止 MoviePy 读取配置、密钥等任意服务器文件。
-            logger.warning(
-                f"reject unsafe bgm file: {bgm_file}, error: {str(exc)}"
-            )
+            logger.warning(f"reject unsafe bgm file: {bgm_file}, error: {str(exc)}")
             return ""
         return resolved_bgm_file
 
@@ -587,9 +589,9 @@ def _fit_clip_to_canvas(
     background = ColorClip(
         size=(target_width, target_height), color=(0, 0, 0)
     ).with_duration(clip.duration)
-    resized_clip = clip.resized(
-        new_size=(resized_width, resized_height)
-    ).with_position("center")
+    resized_clip = clip.resized(new_size=(resized_width, resized_height)).with_position(
+        "center"
+    )
     return CompositeVideoClip(
         [background, resized_clip], size=(target_width, target_height)
     ).with_duration(clip.duration)
@@ -649,7 +651,7 @@ def combine_videos(
         clip_duration = clip.duration
         clip_w, clip_h = clip.size
         close_clip(clip)
-        
+
         start_time = 0
 
         while start_time < clip_duration:
@@ -678,21 +680,21 @@ def combine_videos(
         subclipped_items=subclipped_items,
         concat_mode=video_concat_mode,
     )
-        
+
     logger.debug(f"total subclipped items: {len(subclipped_items)}")
-    
+
     # Add downloaded clips over and over until the duration of the audio (max_duration) has been reached
     for i, subclipped_item in enumerate(subclipped_items):
         if video_duration >= required_video_duration:
             break
-        
+
         logger.debug(
-            f"processing clip {i+1}: {subclipped_item.width}x{subclipped_item.height}, "
+            f"processing clip {i + 1}: {subclipped_item.width}x{subclipped_item.height}, "
             f"source: {os.path.basename(subclipped_item.source_file_path)}, "
             f"current duration: {video_duration:.2f}s, "
             f"remaining: {required_video_duration - video_duration:.2f}s"
         )
-        
+
         try:
             clip = _open_video_clip_quietly(subclipped_item.file_path).subclipped(
                 subclipped_item.start_time, subclipped_item.end_time
@@ -751,9 +753,9 @@ def combine_videos(
 
             if clip.duration > max_clip_duration:
                 clip = clip.subclipped(0, max_clip_duration)
-                
+
             # wirte clip to temp file
-            clip_file = f"{output_dir}/temp-clip-{i+1}.mp4"
+            clip_file = f"{output_dir}/temp-clip-{i + 1}.mp4"
             _write_videofile_with_codec_fallback(
                 clip,
                 clip_file,
@@ -776,10 +778,10 @@ def combine_videos(
                 )
             )
             video_duration += clip_duration_saved
-            
+
         except Exception as e:
             logger.error(f"failed to process clip: {str(e)}")
-    
+
     # loop processed clips until the video duration covers the audio duration and the small safety margin.
     if video_duration < required_video_duration:
         logger.warning(
@@ -795,15 +797,15 @@ def combine_videos(
         logger.info(
             f"video duration: {video_duration:.2f}s, audio duration: {audio_duration:.2f}s, "
             f"required duration: {required_video_duration:.2f}s, "
-            f"looped {len(processed_clips)-len(base_clips)} clips"
+            f"looped {len(processed_clips) - len(base_clips)} clips"
         )
-     
+
     # merge video clips progressively, avoid loading all videos at once to avoid memory overflow
     logger.info("starting clip merging process")
     if not processed_clips:
         logger.warning("no clips available for merging")
         return combined_video_path
-    
+
     clip_files = [clip.file_path for clip in processed_clips]
     logger.info(f"concatenating {len(clip_files)} clips with ffmpeg")
     concat_video_clips_with_ffmpeg(
@@ -813,13 +815,12 @@ def combine_videos(
         output_dir=output_dir,
         max_duration=audio_duration,
     )
-    
+
     # clean temp files
     delete_files(clip_files)
-            
+
     logger.info("video combining completed")
     return combined_video_path
-
 
 
 def generate_video(
@@ -851,7 +852,6 @@ def generate_video(
     # write into the same directory as the output file
     output_dir = os.path.dirname(output_file)
 
-
     # MoviePy 的 CompositeAudioClip.close() 不会关闭子 AudioFileClip。这里用
     # ExitStack 显式持有所有原始文件 reader，确保成功、字幕异常、混音失败和
     # 视频写入失败等路径都能释放 FFmpeg 子进程，尤其避免 Windows 文件被占用。
@@ -867,7 +867,7 @@ def generate_video(
 
         if subtitle_path and os.path.exists(subtitle_path):
             if params.subtitle_enabled:
-                # 字幕渲染收敛为一次门面调用：普通字幕、诗歌字幕以及未来
+                # 字幕渲染收敛为一次门面调用：普通字幕、带头部字幕以及未来
                 # 的显示模式全部由 subtitles 包内部根据配置分发，流水线
                 # 不感知任何渲染细节。
                 try:
@@ -885,14 +885,10 @@ def generate_video(
                     )
                     raise
 
-                video_clip = CompositeVideoClip(
-                    [source_video_clip, *overlays]
-                )
+                video_clip = CompositeVideoClip([source_video_clip, *overlays])
                 clip_stack.callback(video_clip.close)
 
-        bgm_enabled = bgm_service.should_use_bgm(
-            params.bgm_type, params.bgm_volume
-        )
+        bgm_enabled = bgm_service.should_use_bgm(params.bgm_type, params.bgm_volume)
         if not bgm_enabled and params.bgm_type:
             # 所有 BGM 来源共用这一条短路规则。音量不大于 0 时不能解析随机或
             # 自定义文件，也不能加载提供商返回的文件，避免无意义的 IO 和混音。

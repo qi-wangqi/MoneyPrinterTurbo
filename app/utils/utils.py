@@ -278,7 +278,7 @@ def str_contains_punctuation(word):
     return False
 
 
-def split_string_by_punctuations(s):
+def split_string_by_punctuations(s, keep_punctuation=False):
     result = []
     txt = ""
 
@@ -312,12 +312,75 @@ def split_string_by_punctuations(s):
         if char not in const.PUNCTUATIONS:
             txt += char
         else:
+            # 字幕展示层必须保留标点；语音时长估算等其他调用方继续
+            # 使用默认行为，不把标点计入文本行。
+            if keep_punctuation:
+                txt += char
             result.append(txt.strip())
             txt = ""
     result.append(txt.strip())
     # filter empty string
     result = list(filter(None, result))
     return result
+
+
+def split_string_by_sentences(s, keep_punctuation=True):
+    """按完整句切分文本，供字幕 `sentence` 显示模式使用。
+
+    与 `split_string_by_punctuations` 不同，逗号、顿号、冒号不是句末符；
+    句号、问号、叹号和省略号才结束一个 cue。保留句末标点，保证字幕
+    展示与用户文案一致。
+    """
+    sentence_endings = set(const.SENTENCE_ENDINGS)
+    result = []
+    txt = ""
+    pending_skip = 0
+
+    for index, char in enumerate(s):
+        if pending_skip:
+            pending_skip -= 1
+            continue
+        if char == "\n":
+            result.append(txt.strip())
+            txt = ""
+            continue
+
+        # 小数点不是句末符，例如 "2.5" 不能被拆成两条字幕。
+        if char == "." and index > 0 and index < len(s) - 1:
+            if s[index - 1].isdigit() and s[index + 1].isdigit():
+                txt += char
+                continue
+
+        # ASCII 省略号必须作为整体处理，否则 `...` 会被拆成三条 cue。
+        if char == "." and s.startswith("...", index):
+            txt += "..."
+            result.append(txt.strip())
+            txt = ""
+            pending_skip = 2
+            continue
+
+        if char == "…":
+            ellipsis_count = 1
+            while (
+                index + ellipsis_count < len(s)
+                and s[index + ellipsis_count] == "…"
+            ):
+                ellipsis_count += 1
+            txt += "…" * ellipsis_count
+            result.append(txt.strip())
+            txt = ""
+            pending_skip = ellipsis_count - 1
+            continue
+
+        txt += char
+        if char in sentence_endings:
+            if not keep_punctuation:
+                txt = txt[:-1]
+            result.append(txt.strip())
+            txt = ""
+
+    result.append(txt.strip())
+    return list(filter(None, result))
 
 
 def split_string_by_lines(s):

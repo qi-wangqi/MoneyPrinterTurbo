@@ -12,12 +12,17 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from app.services.subtitles import fonts
-from app.services.subtitles.models import BackgroundStyle, Direction
+from app.models.schema import (
+    SubtitleAlignH,
+    SubtitleAlignV,
+    SubtitleBackgroundStyle,
+    SubtitleDirection,
+)
 
 
 # 竖排单列的宽度系数：列宽 = 字号 × 该系数 + 描边留白。系数里包含左右
 # 呼吸空间，让相邻列互不粘连。
-COLUMN_WIDTH_RATIO = 1.4
+SUBTITLE_COLUMN_WIDTH_RATIO = 1.4
 
 
 def new_canvas(width: float, height: float) -> Image.Image:
@@ -39,7 +44,7 @@ def _draw_char(
     position: tuple[float, float],
     char: str,
     font: ImageFont.FreeTypeFont,
-    color: str,
+    text_color: str,
     stroke_color: str,
     stroke_width: int,
 ) -> None:
@@ -48,7 +53,7 @@ def _draw_char(
         position,
         char,
         font=font,
-        fill=color,
+        fill=text_color,
         anchor="mm",
         stroke_width=stroke_width,
         stroke_fill=stroke_color,
@@ -59,7 +64,7 @@ def render_vertical_text(
     text: str,
     font: ImageFont.FreeTypeFont,
     font_size: int,
-    color: str,
+    text_color: str,
     stroke_color: str,
     stroke_width: int,
     highlight_visible_index: int | None = None,
@@ -68,7 +73,7 @@ def render_vertical_text(
     """把一行文本渲染成一列竖排文字，返回贴合内容的透明位图。"""
     chars = [char for char in text if not char.isspace()]
     pad = _stroke_padding(stroke_width)
-    width = int(font_size * COLUMN_WIDTH_RATIO + pad)
+    width = int(font_size * SUBTITLE_COLUMN_WIDTH_RATIO + pad)
     height = fonts.vertical_advance_em(text) * font_size + pad
     canvas = new_canvas(width, height)
     draw = ImageDraw.Draw(canvas)
@@ -81,7 +86,7 @@ def render_vertical_text(
             (0, 0), char, font=font, anchor="mm"
         )
         ink_offset = ((ink_left + ink_right) / 2, (ink_top + ink_bottom) / 2)
-        if char in fonts.VERTICAL_COMPACT_PUNCT:
+        if char in fonts.SUBTITLE_VERTICAL_COMPACT_PUNCT:
             # 标点压缩到半格、墨迹靠上偏右，紧贴前一个字。
             desired = (width * 0.64, y + cell_height * 0.32)
         else:
@@ -92,7 +97,9 @@ def render_vertical_text(
             if visible_index == highlight_visible_index
             else stroke_color
         )
-        _draw_char(draw, position, char, font, color, current_stroke_color, stroke_width)
+        _draw_char(
+            draw, position, char, font, text_color, current_stroke_color, stroke_width
+        )
         y += cell_height
     return canvas
 
@@ -101,7 +108,7 @@ def render_horizontal_text(
     text: str,
     font: ImageFont.FreeTypeFont,
     font_size: int,
-    color: str,
+    text_color: str,
     stroke_color: str,
     stroke_width: int,
     highlight_visible_index: int | None = None,
@@ -112,7 +119,7 @@ def render_horizontal_text(
     text_width = measure.textlength(text, font=font)
     pad = _stroke_padding(stroke_width)
     width = text_width + pad
-    height = font_size * fonts.CHAR_HEIGHT_RATIO + pad
+    height = font_size * fonts.SUBTITLE_CHAR_HEIGHT_RATIO + pad
     canvas = new_canvas(width, height)
     draw = ImageDraw.Draw(canvas)
     if highlight_visible_index is None:
@@ -120,7 +127,7 @@ def render_horizontal_text(
             (width / 2, height / 2),
             text,
             font=font,
-            fill=color,
+            fill=text_color,
             anchor="mm",
             stroke_width=stroke_width,
             stroke_fill=stroke_color,
@@ -134,7 +141,7 @@ def render_horizontal_text(
         (width / 2, height / 2),
         text,
         font=font,
-        fill=color,
+        fill=text_color,
         anchor="mm",
         stroke_width=stroke_width,
         stroke_fill=stroke_color,
@@ -151,7 +158,7 @@ def render_horizontal_text(
                     (char_center_x, height / 2.0),
                     char,
                     font=font,
-                    fill=color,
+                    fill=text_color,
                     anchor="mm",
                     stroke_width=stroke_width,
                     stroke_fill=highlight_stroke_color or stroke_color,
@@ -164,8 +171,8 @@ def render_slots(
     chunks: list[str],
     font: ImageFont.FreeTypeFont,
     font_size: int,
-    direction: Direction,
-    color: str,
+    direction: SubtitleDirection,
+    text_color: str,
     stroke_color: str,
     stroke_width: int,
     highlight_visible_index: int | None = None,
@@ -182,7 +189,7 @@ def render_slots(
                 chunk,
                 font,
                 font_size,
-                color,
+                text_color,
                 stroke_color,
                 stroke_width,
                 highlight_visible_index=highlight_visible_index,
@@ -195,7 +202,7 @@ def render_slots(
             chunk,
             font,
             font_size,
-            color,
+            text_color,
             stroke_color,
             stroke_width,
             highlight_visible_index=highlight_visible_index,
@@ -205,51 +212,132 @@ def render_slots(
     ]
 
 
+def render_slot_group(
+    slots: list[Image.Image],
+    direction: SubtitleDirection,
+    gap: float,
+    slot_align_h: SubtitleAlignH,
+    slot_align_v: SubtitleAlignV,
+    background_color: str | None = None,
+    background_style: SubtitleBackgroundStyle = SubtitleBackgroundStyle.rectangle,
+    padding: tuple[int, int] = (0, 0),
+) -> Image.Image:
+    """把一个 cue 的多个槽组成方向感知的内容块。
+
+    横排槽沿垂直主轴堆叠，行内水平位置由 slot_align_h 决定；竖排槽沿
+    水平主轴排列，列内垂直位置由 slot_align_v 决定。这样替换式、整块式
+    与滚动式都遵守同一个“文字方向控制所有字幕”的规则。
+    """
+    if not slots:
+        return new_canvas(1, 1)
+
+    pad_x, pad_y = padding
+    if direction.is_vertical:
+        main_size = sum(slot.width for slot in slots) + gap * (len(slots) - 1)
+        cross_size = max(slot.height for slot in slots)
+        width = main_size + pad_x * 2
+        height = cross_size + pad_y * 2
+        canvas = new_canvas(width, height)
+        if background_color:
+            _draw_background(canvas, background_color, background_style)
+
+        cursor = (
+            width - pad_x
+            if direction == SubtitleDirection.vertical_rtl
+            else pad_x
+        )
+        for slot in slots:
+            if direction == SubtitleDirection.vertical_rtl:
+                left = cursor - slot.width
+                cursor = left - gap
+            else:
+                left = cursor
+                cursor = left + slot.width + gap
+
+            if slot_align_v == SubtitleAlignV.top:
+                top = pad_y
+            elif slot_align_v == SubtitleAlignV.bottom:
+                top = height - pad_y - slot.height
+            else:
+                top = pad_y + (height - pad_y * 2 - slot.height) / 2.0
+            canvas.alpha_composite(
+                slot, (int(round(left)), int(round(top)))
+            )
+        return canvas
+
+    main_size = sum(slot.height for slot in slots) + gap * (len(slots) - 1)
+    cross_size = max(slot.width for slot in slots)
+    width = cross_size + pad_x * 2
+    height = main_size + pad_y * 2
+    canvas = new_canvas(width, height)
+    if background_color:
+        _draw_background(canvas, background_color, background_style)
+
+    cursor = pad_y
+    for slot in slots:
+        top = cursor
+        cursor = top + slot.height + gap
+        if slot_align_h == SubtitleAlignH.left:
+            left = pad_x
+        elif slot_align_h == SubtitleAlignH.right:
+            left = width - pad_x - slot.width
+        else:
+            left = pad_x + (width - pad_x * 2 - slot.width) / 2.0
+        canvas.alpha_composite(
+            slot, (int(round(left)), int(round(top)))
+        )
+    return canvas
+
+
 def _draw_background(
     canvas: Image.Image,
-    color: str,
-    style: BackgroundStyle,
+    background_color: str,
+    style: SubtitleBackgroundStyle,
 ) -> None:
     """在画布上铺满字幕背景：实心矩形或圆角半透明。"""
-    rgb = _hex_to_rgb(color)
-    if style == BackgroundStyle.ROUNDED_TRANSLUCENT:
-        alpha = 140
+    red, green, blue, color_alpha = _hex_to_rgba(background_color)
+    if style == SubtitleBackgroundStyle.rounded_translucent:
+        alpha = int(color_alpha * 140 / 255)
         radius = max(8, int(canvas.width * 0.06))
     else:
-        alpha = 255
+        alpha = color_alpha
         radius = 0
     draw = ImageDraw.Draw(canvas)
     draw.rounded_rectangle(
         [0, 0, max(0, canvas.width - 1), max(0, canvas.height - 1)],
         radius=radius,
-        fill=(rgb[0], rgb[1], rgb[2], alpha),
+        fill=(red, green, blue, alpha),
     )
 
 
-def _hex_to_rgb(color: str) -> tuple[int, int, int]:
-    """字幕背景色来自 API/WebUI 参数，可能为空或格式不规范。
+def _hex_to_rgba(color: str) -> tuple[int, int, int, int]:
+    """字幕颜色来自 API/CLI 参数，可能为空或格式不规范。
 
-    统一只接受 #RRGGBB 形式，非法值回退为黑色，避免 PIL 渲染阶段抛出
-    异常中断任务。
+    统一接受 #RRGGBB 和 #RRGGBBAA；非法值回退为不透明黑色，避免 PIL
+    渲染阶段抛出异常中断任务。
     """
-    if isinstance(color, str) and color.startswith("#") and len(color) == 7:
+    if isinstance(color, str) and color.startswith("#") and len(color) in {7, 9}:
         try:
-            return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
+            red = int(color[1:3], 16)
+            green = int(color[3:5], 16)
+            blue = int(color[5:7], 16)
+            alpha = int(color[7:9], 16) if len(color) == 9 else 255
+            return (red, green, blue, alpha)
         except ValueError:
             pass
-    return (0, 0, 0)
+    return (0, 0, 0, 255)
 
 
 def render_text_block(
     text: str,
     font_path: str,
     font_size: int,
-    color: str,
+    text_color: str,
     stroke_color: str,
     stroke_width: int,
     max_width: float,
     background_color: str | None = None,
-    background_style: BackgroundStyle = BackgroundStyle.RECTANGLE,
+    background_style: SubtitleBackgroundStyle = (SubtitleBackgroundStyle.rectangle),
 ) -> Image.Image:
     """渲染替换式字幕的一个内容块：折行 + 居中 + 可选背景。
 
@@ -259,7 +347,7 @@ def render_text_block(
     """
     font = fonts.load_font(font_path, font_size)
     has_background = bool(background_color)
-    rounded = background_style == BackgroundStyle.ROUNDED_TRANSLUCENT
+    rounded = background_style == SubtitleBackgroundStyle.rounded_translucent
     # 圆角背景按文字真实宽度生成，左右留白更克制；矩形背景铺满可用宽度，
     # 保留较大安全边距，避免长字幕贴边。
     pad_ratio = 0.4 if rounded else 0.6
@@ -275,12 +363,14 @@ def render_text_block(
     # 多行文本若不加双侧描边空间会互相粘连。
     pitch = row_height + interline + stroke_pad
     measure = ImageDraw.Draw(new_canvas(1, 1))
-    text_w = max(
-        (fonts.text_width(measure, line, font) for line in lines), default=0.0
-    )
+    text_w = max((fonts.text_width(measure, line, font) for line in lines), default=0.0)
     text_h = (len(lines) - 1) * pitch + row_height + stroke_pad
 
-    if has_background and rounded:
+    if not has_background:
+        # 无背景时返回“贴合文字”的视觉盒，left/center/right 对齐才真正
+        # 有意义；否则短句也会撑满视窗，三种水平对齐看起来都一样。
+        box_w = max(1, int(text_w) + 2 * stroke_width)
+    elif rounded:
         box_w = max(1, min(int(max_width), int(text_w) + 2 * pad_x))
     else:
         box_w = max(1, int(max_width))
@@ -304,7 +394,7 @@ def render_text_block(
             (box_w / 2, baseline_y),
             line,
             font=font,
-            fill=color,
+            fill=text_color,
             anchor="ms",
             stroke_width=stroke_width,
             stroke_fill=stroke_color,
@@ -347,4 +437,6 @@ def paste_cropped(
             visible_bottom - top_int,
         )
     )
-    canvas.alpha_composite(image_with_alpha(cropped, alpha), (visible_left, visible_top))
+    canvas.alpha_composite(
+        image_with_alpha(cropped, alpha), (visible_left, visible_top)
+    )

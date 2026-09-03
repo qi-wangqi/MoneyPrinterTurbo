@@ -1,20 +1,16 @@
 """脚本文本解析：把生成文案拆成“头部行 + 正文行”。
 
-普通模式没有头部行（header_line_count == 0），全部行都是正文；诗歌模式
-（header_line_count == 2）前两行是诗名和作者，作为固定图层渲染。引擎
-只依赖 ScriptInfo 结构，不知道“诗歌”这个概念。
+普通文本没有头部行（header_line_count == 0），全部行都是正文；
+带头部文本前 N 行固定显示，其余行为正文。引擎只依赖 SubtitleScriptInfo 结构。
 """
 
+from app.models.exception import SubtitleException
 from app.utils import utils
-from app.services.subtitles.models import ScriptInfo
+from app.services.subtitles.models import SubtitleScriptInfo
 
 
-class ScriptParseError(ValueError):
-    """脚本行数不足以支撑指定数量的头部行时抛出。"""
-
-
-def parse_script(text: str, header_line_count: int = 0) -> ScriptInfo:
-    """解析脚本文本，返回结构化的 ScriptInfo。
+def parse_script(text: str, header_line_count: int = 0) -> SubtitleScriptInfo:
+    """解析脚本文本，返回结构化的 SubtitleScriptInfo。
 
     - Markdown 分隔线已由字幕归一化移除（TTS 不朗读它们，保留会导致
       cue 与正文行错位）；
@@ -24,20 +20,20 @@ def parse_script(text: str, header_line_count: int = 0) -> ScriptInfo:
     lines = utils.split_string_by_lines(normalized_text)
 
     if header_line_count > 0:
-        # 诗歌模式要求诗名、作者、正文至少各一行，缺任何一项都直接报错，
+        # 带头部模式要求头部行、正文至少各一行，缺任何一项都直接报错，
         # 避免渲染出残缺的固定图层。
         if len(lines) < header_line_count + 1:
-            raise ScriptParseError(
+            raise SubtitleException(
                 "script requires header lines plus at least one body line: "
                 f"header={header_line_count}, lines={len(lines)}"
             )
-        info = ScriptInfo(
+        info = SubtitleScriptInfo(
             title=lines[0],
             author=lines[1] if header_line_count > 1 else "",
             body_lines=tuple(lines[header_line_count:]),
         )
     else:
-        info = ScriptInfo(
+        info = SubtitleScriptInfo(
             title="",
             author="",
             body_lines=tuple(lines),

@@ -1,11 +1,9 @@
 import warnings
 from enum import Enum
-from typing import Any, List, Literal, Optional, Union
+from typing import Any, List, Literal, Optional
 
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field
-
-from app.config import config
 
 # 忽略 Pydantic 的特定警告
 warnings.filterwarnings(
@@ -53,6 +51,62 @@ class VideoFitMode(str, Enum):
     contain = "contain"
 
 
+class SubtitleDirection(str, Enum):
+    """文字流动方向，决定 cue 的排列与滚动轴。"""
+
+    horizontal = "horizontal"  # 横排：正文行自上而下排列
+    vertical_rtl = "vertical_rtl"  # 新列自右向左进入
+    vertical_ltr = "vertical_ltr"  # 新列自左向右进入
+
+    @property
+    def is_vertical(self) -> bool:
+        """竖排方向返回 True；横排返回 False。"""
+        return self in (
+            SubtitleDirection.vertical_rtl,
+            SubtitleDirection.vertical_ltr,
+        )
+
+
+class SubtitleShowMode(str, Enum):
+    """字幕显示模式，决定 cue 切分方式与渲染行为。"""
+
+    punctuation = "punctuation"  # 按标点切分 cue，逐条替换显示
+    sentence = "sentence"  # 按完整句切分 cue，逐条替换显示
+    scroll = "scroll"  # 连续滚动：cue 按方向锚点滑动，超出视窗裁剪
+    block = "block"  # 整块常驻：全文作为一个块显示，不切分不滚动
+
+    @property
+    def is_replace_style(self) -> bool:
+        """替换式模式在渲染侧共用同一套逐条替换行为。"""
+        return self in (
+            SubtitleShowMode.punctuation,
+            SubtitleShowMode.sentence,
+        )
+
+
+class SubtitleAlignH(str, Enum):
+    """内容块在视窗内的水平对齐。"""
+
+    left = "left"
+    center = "center"
+    right = "right"
+
+
+class SubtitleAlignV(str, Enum):
+    """内容块在视窗内的垂直对齐。"""
+
+    top = "top"
+    middle = "middle"
+    bottom = "bottom"
+
+
+class SubtitleBackgroundStyle(str, Enum):
+    """字幕背景样式。"""
+
+    rectangle = "rectangle"  # 实心矩形
+    rounded_translucent = "rounded_translucent"  # 圆角半透明
+
+
 _Config = ConfigDict(
     arbitrary_types_allowed=True,
     # Note: ensure your key names match renamed V2 parameters if needed
@@ -77,11 +131,11 @@ class VideoParams(BaseModel):
       "video_aspect": "横屏 16:9（西瓜视频）",
       "voice_name": "女生-晓晓",
       "bgm_name": "random",
-      "font_name": "STHeitiMedium 黑体-中",
-      "text_color": "#FFFFFF",
-      "font_size": 60,
-      "stroke_color": "#000000",
-      "stroke_width": 1.5
+      "subtitle_font": "MicrosoftYaHeiBold.ttc",
+      "subtitle_text_color": "#FFFFFF",
+      "subtitle_font_size": 60,
+      "subtitle_stroke_color": "#000000",
+      "subtitle_stroke_width": 1.5
     }
     """
 
@@ -118,29 +172,26 @@ class VideoParams(BaseModel):
     video_music_prompt: str = Field(default="", max_length=2000)
     sonilo_bgm_prompt: str = Field(default="", max_length=2000)
 
-    subtitle_enabled: Optional[bool] = True
-    subtitle_position: Optional[str] = config.ui.get(
-        "subtitle_position", "bottom"
-    )  # top, bottom, center, custom
-    custom_position: float = config.ui.get("custom_position", 70.0)
-    font_name: Optional[str] = "STHeitiMedium.ttc"
-    text_fore_color: Optional[str] = "#FFFFFF"
-    text_background_color: Union[bool, str] = False
-    rounded_subtitle_background: bool = False
-
-    font_size: int = 60
-    stroke_color: Optional[str] = "#000000"
-    stroke_width: float = 1.5
-    subtitle_style: Literal["standard", "poetry"] = "standard"
-    poetry_direction: Literal[
-        "right_to_left",
-        "left_to_right",
-        "top_to_bottom",
-    ] = "right_to_left"
-    poetry_margin_top: float = Field(default=6.0, ge=0, le=25)
-    poetry_margin_right: float = Field(default=6.0, ge=0, le=25)
-    poetry_margin_bottom: float = Field(default=6.0, ge=0, le=25)
-    poetry_margin_left: float = Field(default=6.0, ge=0, le=25)
+    subtitle_enabled: bool = True
+    subtitle_font: str = "MicrosoftYaHeiBold.ttc"
+    subtitle_direction: SubtitleDirection = SubtitleDirection.horizontal
+    subtitle_show_mode: SubtitleShowMode = SubtitleShowMode.punctuation
+    subtitle_align_h: SubtitleAlignH = SubtitleAlignH.center
+    subtitle_align_v: SubtitleAlignV = SubtitleAlignV.bottom
+    subtitle_margin_top: float = Field(default=6.0, ge=0, le=25)
+    subtitle_margin_right: float = Field(default=6.0, ge=0, le=25)
+    subtitle_margin_bottom: float = Field(default=6.0, ge=0, le=25)
+    subtitle_margin_left: float = Field(default=6.0, ge=0, le=25)
+    subtitle_header_line_count: int = Field(default=0, ge=0, le=2)
+    subtitle_text_color: str = "#FFFFFF"
+    subtitle_font_size: int = Field(default=60, ge=1)
+    subtitle_stroke_color: str = "#000000"
+    subtitle_stroke_width: float = Field(default=1.5, ge=0, le=10)
+    subtitle_background_enabled: bool = False
+    subtitle_background_color: str = "#000000"
+    subtitle_background_style: SubtitleBackgroundStyle = (
+        SubtitleBackgroundStyle.rectangle
+    )
     n_threads: Optional[int] = 4
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
@@ -156,16 +207,10 @@ class SubtitleRequest(BaseModel):
     bgm_type: Optional[str] = "random"
     bgm_file: Optional[str] = ""
     bgm_volume: Optional[float] = 0.2
-    subtitle_position: Optional[str] = config.ui.get("subtitle_position", "bottom")
-    font_name: Optional[str] = "STHeitiMedium.ttc"
-    text_fore_color: Optional[str] = "#FFFFFF"
-    text_background_color: Union[bool, str] = False
-    rounded_subtitle_background: bool = False
-    font_size: int = 60
-    stroke_color: Optional[str] = "#000000"
-    stroke_width: float = 1.5
     video_source: Optional[str] = "local"
-    subtitle_enabled: Optional[str] = "true"
+    subtitle_enabled: bool = True
+    subtitle_show_mode: SubtitleShowMode = SubtitleShowMode.punctuation
+    subtitle_header_line_count: int = Field(default=0, ge=0, le=2)
 
 
 class AudioRequest(BaseModel):

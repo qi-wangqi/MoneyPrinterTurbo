@@ -126,7 +126,7 @@ def _sample_config_sections():
         },
         "azure": {"speech_key": "azure-key", "speech_region": "westeurope"},
         "elevenlabs": {"api_key": "eleven-key", "model_id": "eleven_v3"},
-        "ui": {"language": "en", "font_size": 60},
+        "ui": {"language": "en", "subtitle_font_size": 60},
     }
 
 
@@ -152,8 +152,8 @@ def test_settings_preset_round_trip_preserves_generation_settings():
         video_subject="a cat",
         video_aspect="9:16",
         video_fit_mode="contain",
-        font_size=48,
-        stroke_width=2.5,
+        subtitle_font_size=48,
+        subtitle_stroke_width=2.5,
         voice_volume=0.8,
         paragraph_number=3,
     ).model_dump(mode="json")
@@ -165,8 +165,8 @@ def test_settings_preset_round_trip_preserves_generation_settings():
     assert restored["video_subject"] == "a cat"
     assert restored["video_aspect"] == "9:16"
     assert restored["video_fit_mode"] == "contain"
-    assert restored["font_size"] == 48
-    assert restored["stroke_width"] == 2.5
+    assert restored["subtitle_font_size"] == 48
+    assert restored["subtitle_stroke_width"] == 2.5
     assert restored["voice_volume"] == 0.8
     assert restored["paragraph_number"] == 3
 
@@ -175,13 +175,13 @@ def test_settings_preset_accepts_file_without_video_subject():
     payload = {
         "schema": SETTINGS_PRESET_SCHEMA,
         "version": SETTINGS_PRESET_VERSION,
-        "params": {"font_size": 72},
+        "params": {"subtitle_font_size": 72},
     }
 
     restored = parse_settings_preset(_encode(payload))
 
     assert restored["video_subject"] == ""
-    assert restored["font_size"] == 72
+    assert restored["subtitle_font_size"] == 72
 
 
 def test_settings_preset_rejects_foreign_or_outdated_files():

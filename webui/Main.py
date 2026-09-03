@@ -29,6 +29,7 @@ sys.path.insert(0, root_dir)
 
 from app.config import config
 from app.models import const
+from app.models.exception import SubtitleException
 from app.models.llm_provider import (
     DEFAULT_LLM_PROVIDER_ID,
     LLM_PROVIDER_REGISTRY,
@@ -37,6 +38,11 @@ from app.models.llm_provider import (
 )
 from app.models.schema import (
     MaterialInfo,
+    SubtitleAlignH,
+    SubtitleAlignV,
+    SubtitleBackgroundStyle,
+    SubtitleDirection,
+    SubtitleShowMode,
     VideoAspect,
     VideoConcatMode,
     VideoFitMode,
@@ -48,7 +54,6 @@ from app.services import (
     cache_manager,
     llm,
     loomloom,
-    video,
     volcengine_seedance,
     voice,
     webui_task,
@@ -110,25 +115,16 @@ UPLOAD_POST_MANAGE_USERS_URL = "https://app.upload-post.com/manage-users"
 # 后端在 video_codec 未配置时继续采用稳定的 libx264；单独保留该哨兵可以区分
 # “跟随项目默认策略”和“用户明确固定 libx264”，便于未来安全调整默认策略。
 DEFAULT_VIDEO_CODEC_OPTION = "__default__"
+# WebUI 字幕默认值直接取自统一契约模型，避免 schema 和页面各自漂移。
+_DEFAULT_VIDEO_PARAMS = VideoParams(video_subject="")
+_DEFAULT_SUBTITLE_VALUES = {
+    field_name: getattr(_DEFAULT_VIDEO_PARAMS, field_name)
+    for field_name in VideoParams.model_fields
+    if field_name.startswith("subtitle_")
+}
 DEFAULT_SUBTITLE_SETTINGS = {
-    "subtitle_enabled": True,
-    "font_name": "MicrosoftYaHeiBold.ttc",
-    "subtitle_position": "bottom",
-    "custom_position": 70.0,
-    "text_fore_color": "#FFFFFF",
-    "font_size": 60,
-    "stroke_color": "#000000",
-    "stroke_width": 1.5,
-    "subtitle_background_enabled": False,
-    "subtitle_background_color": "#000000",
-    "rounded_subtitle_background": False,
-    "subtitle_style": "standard",
-    "poetry_direction": "right_to_left",
-    "poetry_margins": "6,6,6,6",
-    "poetry_margin_top": 6.0,
-    "poetry_margin_right": 6.0,
-    "poetry_margin_bottom": 6.0,
-    "poetry_margin_left": 6.0,
+    field_name: getattr(value, "value", value)
+    for field_name, value in _DEFAULT_SUBTITLE_VALUES.items()
 }
 LOCAL_MATERIAL_EXTENSIONS = {
     ".mp4",
@@ -148,18 +144,10 @@ _FINAL_VIDEO_PATTERN = re.compile(
 _DOWNLOAD_FILENAME_INVALID_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_FILENAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
-    | {
-        f"{prefix}{number}"
-        for prefix in ("COM", "LPT")
-        for number in range(1, 10)
-    }
+    | {f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)}
     # Win32 还会把 Latin-1 上标数字 ¹、²、³ 识别为设备编号。虽然这类主题
     # 很少见，但仍会导致 Windows 下载失败，因此与普通数字保留名统一处理。
-    | {
-        f"{prefix}{number}"
-        for prefix in ("COM", "LPT")
-        for number in ("¹", "²", "³")
-    }
+    | {f"{prefix}{number}" for prefix in ("COM", "LPT") for number in ("¹", "²", "³")}
 )
 _RUNTIME_CONFIG_SECTIONS = {
     "app": config.app,
@@ -213,9 +201,7 @@ CREDENTIAL_COMPANION_KEYS = {
     ),
 }
 
-NON_LLM_COMPANION_KEYS = {
-    "app": ("upload_post_username",)
-}
+NON_LLM_COMPANION_KEYS = {"app": ("upload_post_username",)}
 # 同一个密钥在不同面板可能使用各自的控件 key：音频面板直接编辑 Gemini 和
 # MiMo 的 LLM 密钥，胜算云密钥的控件没有 _input 后缀。恢复备份时必须清除
 # 每一个别名，否则遗留的旧值会在下一次 rerun 覆盖刚刚恢复的密钥。
@@ -330,14 +316,15 @@ def _saved_ui_color(key, default):
     return default
 
 
-def _parse_poetry_margins(value):
-    """Parse clockwise top/right/bottom/left percentage margins."""
+def _parse_subtitle_margins(value) -> tuple[float, float, float, float] | None:
+    """Parse the UI margin text in top/right/bottom/left order."""
     parts = re.split(r"[，,]", str(value or "").strip())
     if len(parts) != 4:
         return None
 
     values = []
     for part in parts:
+        part = part.strip().removesuffix("%")
         try:
             number = float(part.strip())
         except (TypeError, ValueError):
@@ -532,10 +519,6 @@ def _initialize_session_state():
             max_length=elevenlabs_music_service.MAX_PROMPT_LENGTH,
         ),
         "subtitle_enabled_checkbox": _saved_ui_bool("subtitle_enabled", True),
-        "stroke_color_picker": _saved_ui_color("stroke_color", "#000000"),
-        "stroke_width_slider": _saved_ui_number(
-            "stroke_width", 1.5, 0.0, 10.0
-        ),
         "loomloom_candidate_count": _saved_ui_number(
             "loomloom_candidate_count",
             3,
@@ -1381,61 +1364,61 @@ def _apply_restored_params(params):
         params.get("video_music_prompt") or ""
     )
 
-    # 字幕设置。对旧任务中的越界数值做最小限幅，避免 Slider 无法初始化。
+    # 字幕设置。数值做最小限幅，避免 Slider 无法初始化。
     st.session_state["subtitle_enabled_checkbox"] = bool(
         params.get("subtitle_enabled", True)
     )
+    _set_stable_widget_value("subtitle_font_select", params.get("subtitle_font") or "")
     _set_stable_widget_value(
-        "subtitle_style_select",
-        params.get("subtitle_style")
-        if params.get("subtitle_style") in {"standard", "poetry"}
-        else "standard",
+        "subtitle_direction_select",
+        params.get("subtitle_direction") or "horizontal",
     )
     _set_stable_widget_value(
-        "poetry_direction_select",
-        params.get("poetry_direction")
-        if params.get("poetry_direction")
-        in {"right_to_left", "left_to_right", "top_to_bottom"}
-        else "right_to_left",
+        "subtitle_show_mode_select",
+        params.get("subtitle_show_mode") or "punctuation",
     )
-    poetry_margin_values = []
-    for margin_name in (
-        "poetry_margin_top",
-        "poetry_margin_right",
-        "poetry_margin_bottom",
-        "poetry_margin_left",
-    ):
+    _set_stable_widget_value(
+        "subtitle_align_h_select", params.get("subtitle_align_h") or "center"
+    )
+    _set_stable_widget_value(
+        "subtitle_align_v_select", params.get("subtitle_align_v") or "bottom"
+    )
+    margin_names = (
+        "subtitle_margin_top",
+        "subtitle_margin_right",
+        "subtitle_margin_bottom",
+        "subtitle_margin_left",
+    )
+    margin_values = []
+    for margin_name in margin_names:
         try:
-            margin_value = min(
-                25.0, max(0.0, float(params.get(margin_name, 6.0)))
-            )
+            margin_value = min(25.0, max(0.0, float(params.get(margin_name, 6.0))))
         except (TypeError, ValueError):
             margin_value = 6.0
-        poetry_margin_values.append(min(25.0, max(0.0, margin_value)))
-    st.session_state["poetry_margins_input"] = ",".join(
-        f"{value:g}" for value in poetry_margin_values
+        margin_values.append(margin_value)
+    st.session_state["subtitle_margins_input"] = ",".join(
+        f"{value:g}%" for value in margin_values
     )
-    _set_stable_widget_value("font_name_select", params.get("font_name") or "")
-    _set_stable_widget_value(
-        "subtitle_position_select", params.get("subtitle_position") or "bottom"
+    st.session_state["subtitle_text_color_picker"] = (
+        params.get("subtitle_text_color") or "#FFFFFF"
     )
-    custom_position = min(100.0, max(0.0, float(params.get("custom_position", 70.0))))
-    st.session_state["custom_position_input"] = str(custom_position)
-    st.session_state["font_color_picker"] = params.get("text_fore_color") or "#FFFFFF"
-    st.session_state["font_size_slider"] = min(
-        100, max(30, int(params.get("font_size", 60)))
+    st.session_state["subtitle_font_size_slider"] = min(
+        100, max(30, int(params.get("subtitle_font_size", 60)))
     )
-    st.session_state["stroke_color_picker"] = params.get("stroke_color") or "#000000"
-    st.session_state["stroke_width_slider"] = min(
-        10.0, max(0.0, float(params.get("stroke_width", 1.5)))
+    st.session_state["subtitle_stroke_color_picker"] = (
+        params.get("subtitle_stroke_color") or "#000000"
     )
-    background_color = params.get("text_background_color")
-    background_enabled = bool(background_color)
-    st.session_state["subtitle_background_enabled_checkbox"] = background_enabled
-    if isinstance(background_color, str):
-        st.session_state["subtitle_background_color_picker"] = background_color
-    st.session_state["rounded_subtitle_background_checkbox"] = bool(
-        params.get("rounded_subtitle_background", False) and background_enabled
+    st.session_state["subtitle_stroke_width_slider"] = min(
+        10.0, max(0.0, float(params.get("subtitle_stroke_width", 1.5)))
+    )
+    st.session_state["subtitle_background_enabled_checkbox"] = bool(
+        params.get("subtitle_background_enabled", False)
+    )
+    st.session_state["subtitle_background_color_picker"] = (
+        params.get("subtitle_background_color") or "#000000"
+    )
+    st.session_state["subtitle_background_style_select"] = params.get(
+        "subtitle_background_style", "rectangle"
     )
 
     st.session_state.pop("local_video_materials_uploader", None)
@@ -1980,8 +1963,10 @@ def format_llm_connection_error(provider_id, base_url, error):
         "unauthorized",
     )
     provider = get_llm_provider(provider_id)
-    if provider is None or not provider.service_endpoints or not any(
-        marker in normalized_error for marker in authentication_markers
+    if (
+        provider is None
+        or not provider.service_endpoints
+        or not any(marker in normalized_error for marker in authentication_markers)
     ):
         return error_text
 
@@ -2088,46 +2073,58 @@ def reset_subtitle_settings():
     """恢复 WebUI 字幕控件和持久化配置中的默认值。"""
     defaults = DEFAULT_SUBTITLE_SETTINGS
     st.session_state["subtitle_enabled_checkbox"] = defaults["subtitle_enabled"]
-    _set_stable_widget_value("subtitle_style_select", defaults["subtitle_style"])
-    _set_stable_widget_value("poetry_direction_select", defaults["poetry_direction"])
-    st.session_state["poetry_margins_input"] = defaults["poetry_margins"]
-    _set_stable_widget_value("font_name_select", defaults["font_name"])
-    _set_stable_widget_value("subtitle_position_select", defaults["subtitle_position"])
-    st.session_state["custom_position_input"] = str(defaults["custom_position"])
-    st.session_state["font_color_picker"] = defaults["text_fore_color"]
-    st.session_state["font_size_slider"] = defaults["font_size"]
-    st.session_state["stroke_color_picker"] = defaults["stroke_color"]
-    st.session_state["stroke_width_slider"] = defaults["stroke_width"]
+    _set_stable_widget_value("subtitle_font_select", defaults["subtitle_font"])
+    _set_stable_widget_value(
+        "subtitle_direction_select", defaults["subtitle_direction"]
+    )
+    _set_stable_widget_value(
+        "subtitle_show_mode_select", defaults["subtitle_show_mode"]
+    )
+    _set_stable_widget_value("subtitle_align_h_select", defaults["subtitle_align_h"])
+    _set_stable_widget_value("subtitle_align_v_select", defaults["subtitle_align_v"])
+    st.session_state["subtitle_margins_input"] = ",".join(
+        f"{defaults[key]:g}%"
+        for key in (
+            "subtitle_margin_top",
+            "subtitle_margin_right",
+            "subtitle_margin_bottom",
+            "subtitle_margin_left",
+        )
+    )
+    st.session_state["subtitle_text_color_picker"] = defaults["subtitle_text_color"]
+    st.session_state["subtitle_font_size_slider"] = defaults["subtitle_font_size"]
+    st.session_state["subtitle_stroke_color_picker"] = defaults["subtitle_stroke_color"]
+    st.session_state["subtitle_stroke_width_slider"] = defaults["subtitle_stroke_width"]
     st.session_state["subtitle_background_enabled_checkbox"] = defaults[
         "subtitle_background_enabled"
     ]
     st.session_state["subtitle_background_color_picker"] = defaults[
         "subtitle_background_color"
     ]
-    st.session_state["rounded_subtitle_background_checkbox"] = defaults[
-        "rounded_subtitle_background"
-    ]
+    _set_stable_widget_value(
+        "subtitle_background_style_select", defaults["subtitle_background_style"]
+    )
 
     # 同步会持久化的 UI 选项，确保恢复后刷新页面仍保持默认设置。
     for key in (
         "subtitle_enabled",
-        "subtitle_style",
-        "poetry_direction",
-        "poetry_margins",
-        "poetry_margin_top",
-        "poetry_margin_right",
-        "poetry_margin_bottom",
-        "poetry_margin_left",
-        "font_name",
-        "subtitle_position",
-        "custom_position",
-        "text_fore_color",
-        "font_size",
-        "stroke_color",
-        "stroke_width",
+        "subtitle_font",
+        "subtitle_direction",
+        "subtitle_show_mode",
+        "subtitle_align_h",
+        "subtitle_align_v",
+        "subtitle_margin_top",
+        "subtitle_margin_right",
+        "subtitle_margin_bottom",
+        "subtitle_margin_left",
+        "subtitle_header_line_count",
+        "subtitle_text_color",
+        "subtitle_font_size",
+        "subtitle_stroke_color",
+        "subtitle_stroke_width",
         "subtitle_background_enabled",
         "subtitle_background_color",
-        "rounded_subtitle_background",
+        "subtitle_background_style",
     ):
         _set_runtime_config("ui", key, defaults[key])
 
@@ -2691,7 +2688,11 @@ def _render_settings_dialog():
         )
 
         with publish_config_panel:
-            st.write(tr("Automatically publish generated videos to social media using upload-post.com"))
+            st.write(
+                tr(
+                    "Automatically publish generated videos to social media using upload-post.com"
+                )
+            )
             st.info(
                 tr("Upload-Post Setup Guide").format(
                     api_keys_url=UPLOAD_POST_API_KEYS_URL,
@@ -2708,7 +2709,7 @@ def _render_settings_dialog():
             upload_post_enabled = st.checkbox(
                 tr("Enable Upload-Post Integration"),
                 value=is_enabled,
-                key="upload_post_enabled_checkbox"
+                key="upload_post_enabled_checkbox",
             )
             if upload_post_enabled != is_enabled:
                 _set_runtime_config("app", "upload_post_enabled", upload_post_enabled)
@@ -2716,10 +2717,12 @@ def _render_settings_dialog():
             upload_post_auto_upload = st.checkbox(
                 tr("Enable Auto-Publish"),
                 value=is_auto,
-                key="upload_post_auto_upload_checkbox"
+                key="upload_post_auto_upload_checkbox",
             )
             if upload_post_auto_upload != is_auto:
-                _set_runtime_config("app", "upload_post_auto_upload", upload_post_auto_upload)
+                _set_runtime_config(
+                    "app", "upload_post_auto_upload", upload_post_auto_upload
+                )
 
             upload_post_api_key = st.text_input(
                 tr("Upload-Post API Key"),
@@ -2728,7 +2731,7 @@ def _render_settings_dialog():
                 help=tr("Upload-Post API Key Help").format(
                     api_keys_url=UPLOAD_POST_API_KEYS_URL
                 ),
-                key="upload_post_api_key_input"
+                key="upload_post_api_key_input",
             )
             if upload_post_api_key != config.app.get("upload_post_api_key", ""):
                 _set_runtime_config("app", "upload_post_api_key", upload_post_api_key)
@@ -2739,7 +2742,7 @@ def _render_settings_dialog():
                 help=tr("Upload-Post Profile Username Help").format(
                     manage_users_url=UPLOAD_POST_MANAGE_USERS_URL
                 ),
-                key="upload_post_username_input"
+                key="upload_post_username_input",
             )
             if upload_post_username != config.app.get("upload_post_username", ""):
                 _set_runtime_config("app", "upload_post_username", upload_post_username)
@@ -2747,26 +2750,40 @@ def _render_settings_dialog():
             upload_post_platforms = st.multiselect(
                 tr("Platforms"),
                 options=["tiktok", "instagram", "youtube"],
-                default=config.app.get("upload_post_platforms", ["tiktok", "instagram"]),
+                default=config.app.get(
+                    "upload_post_platforms", ["tiktok", "instagram"]
+                ),
                 help="Select platforms to publish to",
-                key="upload_post_platforms_multiselect"
+                key="upload_post_platforms_multiselect",
             )
-            if upload_post_platforms != config.app.get("upload_post_platforms", ["tiktok", "instagram"]):
-                _set_runtime_config("app", "upload_post_platforms", upload_post_platforms)
+            if upload_post_platforms != config.app.get(
+                "upload_post_platforms", ["tiktok", "instagram"]
+            ):
+                _set_runtime_config(
+                    "app", "upload_post_platforms", upload_post_platforms
+                )
 
             if "youtube" in upload_post_platforms:
                 yt_status_options = ["public", "private", "unlisted"]
-                yt_saved = config.app.get("upload_post_youtube_privacy_status", "public")
+                yt_saved = config.app.get(
+                    "upload_post_youtube_privacy_status", "public"
+                )
                 if yt_saved not in yt_status_options:
                     yt_saved = "public"
                 upload_post_youtube_privacy_status = st.selectbox(
                     tr("YouTube Privacy Status"),
                     options=yt_status_options,
                     index=yt_status_options.index(yt_saved),
-                    key="upload_post_youtube_privacy_status_selectbox"
+                    key="upload_post_youtube_privacy_status_selectbox",
                 )
-                if upload_post_youtube_privacy_status != config.app.get("upload_post_youtube_privacy_status", "public"):
-                    _set_runtime_config("app", "upload_post_youtube_privacy_status", upload_post_youtube_privacy_status)
+                if upload_post_youtube_privacy_status != config.app.get(
+                    "upload_post_youtube_privacy_status", "public"
+                ):
+                    _set_runtime_config(
+                        "app",
+                        "upload_post_youtube_privacy_status",
+                        upload_post_youtube_privacy_status,
+                    )
 
         # 左侧面板 - 日志设置
         with left_config_panel:
@@ -2838,14 +2855,12 @@ def _render_settings_dialog():
                 # 选择服务区域，再由 Registry 同步 API 申请入口和 Base URL，
                 # 避免手工组合错误。已有空 Base URL 配置继续沿用中国站，只有
                 # 尚未填写 Key 的全新配置才根据界面语言推荐对应入口。
-                selected_service_endpoint = (
-                    llm_provider_spec.select_service_endpoint(
-                        configured_llm_base_url,
-                        has_api_key=bool(str(llm_api_key).strip()),
-                        prefer_international=(
-                            st.session_state.get("ui_language", "en") != "zh"
-                        ),
-                    )
+                selected_service_endpoint = llm_provider_spec.select_service_endpoint(
+                    configured_llm_base_url,
+                    has_api_key=bool(str(llm_api_key).strip()),
+                    prefer_international=(
+                        st.session_state.get("ui_language", "en") != "zh"
+                    ),
                 )
                 endpoint_options = [
                     endpoint.endpoint_id
@@ -3563,9 +3578,7 @@ def _render_loomloom_script_generation(params):
         key="loomloom_script_duration_seconds",
     )
     _set_runtime_config("ui", "loomloom_candidate_count", int(candidate_count))
-    _set_runtime_config(
-        "ui", "loomloom_script_duration_seconds", int(duration_seconds)
-    )
+    _set_runtime_config("ui", "loomloom_script_duration_seconds", int(duration_seconds))
     input_signature = _loomloom_script_signature(
         subject=params.video_subject,
         language=params.video_language,
@@ -4061,9 +4074,7 @@ def _render_video_settings(panel, params):
                 help=tr("Video Fit Mode Help"),
             )
             params.video_fit_mode = VideoFitMode(selected_fit_mode)
-            _set_runtime_config(
-                "ui", "video_fit_mode", params.video_fit_mode.value
-            )
+            _set_runtime_config("ui", "video_fit_mode", params.video_fit_mode.value)
 
             video_clip_durations = [2, 3, 4, 5, 6, 7, 8, 9, 10]
             params.video_clip_duration = stable_selectbox(
@@ -4075,9 +4086,7 @@ def _render_video_settings(panel, params):
                 key="video_clip_duration_select",
                 help=tr("Clip Duration Help"),
             )
-            _set_runtime_config(
-                "ui", "video_clip_duration", params.video_clip_duration
-            )
+            _set_runtime_config("ui", "video_clip_duration", params.video_clip_duration)
             clip_speed_key = localized_widget_key("video_clip_speed_slider")
             # session_state 可能来自旧任务、API 参数或旧版页面状态。控件创建前
             # 统一归一化，既保留合法选择，也确保 slider 始终收到 0.5～2.0
@@ -4102,9 +4111,7 @@ def _render_video_settings(panel, params):
             params.video_count = stable_selectbox(
                 tr("Number of Videos Generated Simultaneously"),
                 options=video_count_options,
-                default_value=_saved_ui_choice(
-                    "video_count", video_count_options, 1
-                ),
+                default_value=_saved_ui_choice("video_count", video_count_options, 1),
                 key="video_count_select",
             )
             _set_runtime_config("ui", "video_count", params.video_count)
@@ -4172,9 +4179,7 @@ def _render_wavespeed_video_settings(params):
         max_clips = max(
             math.ceil(estimated_range[1] * video_count / clip_duration), min_clips
         )
-        st.warning(
-            tr("WaveSpeed Billing Notice").format(min=min_clips, max=max_clips)
-        )
+        st.warning(tr("WaveSpeed Billing Notice").format(min=min_clips, max=max_clips))
     else:
         st.warning(tr("WaveSpeed Billing Notice Without Script"))
     st.checkbox(
@@ -4969,9 +4974,7 @@ def _render_background_music_settings(params, elevenlabs_api_key_rendered=False)
             key="custom_bgm_file_input",
             disabled=uploaded_bgm_file is not None,
         )
-        _set_runtime_config(
-            "ui", "custom_bgm_file", custom_bgm_file.strip()
-        )
+        _set_runtime_config("ui", "custom_bgm_file", custom_bgm_file.strip())
         if uploaded_bgm_file is None and custom_bgm_file and bgm_enabled:
             # 文件名由服务层映射到 storage/bgm 或 resource/songs 后校验，
             # UI 不接受两个白名单目录之外的任意路径。
@@ -4993,9 +4996,7 @@ def _render_background_music_settings(params, elevenlabs_api_key_rendered=False)
             max_chars=sonilo_service.MAX_PROMPT_LENGTH,
             help=tr("Sonilo Music Prompt Help"),
         ).strip()
-        _set_runtime_config(
-            "ui", "sonilo_bgm_prompt", params.video_music_prompt
-        )
+        _set_runtime_config("ui", "sonilo_bgm_prompt", params.video_music_prompt)
         if params.video_count > 1:
             st.warning(tr("Sonilo Multiple Videos Warning"))
         if st.button(
@@ -5022,9 +5023,7 @@ def _render_background_music_settings(params, elevenlabs_api_key_rendered=False)
             max_chars=elevenlabs_music_service.MAX_PROMPT_LENGTH,
             help=tr("ElevenLabs Music Prompt Help"),
         ).strip()
-        _set_runtime_config(
-            "ui", "elevenlabs_music_prompt", params.video_music_prompt
-        )
+        _set_runtime_config("ui", "elevenlabs_music_prompt", params.video_music_prompt)
         if params.video_count > 1:
             st.warning(tr("ElevenLabs Multiple Videos Warning"))
         if st.button(
@@ -5204,9 +5203,8 @@ def _render_audio_settings(panel, params):
                 if voice.is_fish_audio_voice(v):
                     parts = v.split(":", 2)
                     display_name = parts[2] if len(parts) >= 3 else v
-                    return (
-                        display_name.replace("Female", tr("Female"))
-                        .replace("Male", tr("Male"))
+                    return display_name.replace("Female", tr("Female")).replace(
+                        "Male", tr("Male")
                     )
                 return (
                     v.replace("Female", tr("Female"))
@@ -5398,7 +5396,8 @@ def _render_audio_settings(panel, params):
             ):
                 saved_fish_api_key = (
                     config.fish_audio.get("api_key", "")
-                    if hasattr(config, "fish_audio") and isinstance(config.fish_audio, dict)
+                    if hasattr(config, "fish_audio")
+                    and isinstance(config.fish_audio, dict)
                     else ""
                 )
                 fish_audio_api_key = st.text_input(
@@ -5416,7 +5415,8 @@ def _render_audio_settings(panel, params):
                 ]
                 saved_fish_model = (
                     config.fish_audio.get("model", "s2.1-pro-free")
-                    if hasattr(config, "fish_audio") and isinstance(config.fish_audio, dict)
+                    if hasattr(config, "fish_audio")
+                    and isinstance(config.fish_audio, dict)
                     else "s2.1-pro-free"
                 )
                 if saved_fish_model not in _fish_audio_models:
@@ -5566,7 +5566,7 @@ def _render_audio_settings(panel, params):
 
 
 def _render_subtitle_settings(panel, params):
-    """渲染字幕设置并更新生成参数。"""
+    """渲染统一字幕设置并更新生成参数。"""
     with panel:
         with st.container(border=True):
             st.write(tr("Subtitle Settings"))
@@ -5582,316 +5582,322 @@ def _render_subtitle_settings(panel, params):
                 key="subtitle_enabled_checkbox",
             )
             _set_runtime_config("ui", "subtitle_enabled", params.subtitle_enabled)
-            subtitle_settings_disabled = not params.subtitle_enabled
+            disabled = not params.subtitle_enabled
 
-            subtitle_style_options = ["standard", "poetry"]
-            saved_subtitle_style = config.ui.get(
-                "subtitle_style", DEFAULT_SUBTITLE_SETTINGS["subtitle_style"]
-            )
-            if saved_subtitle_style not in subtitle_style_options:
-                saved_subtitle_style = DEFAULT_SUBTITLE_SETTINGS["subtitle_style"]
             font_names = get_all_fonts()
-            saved_font_name = config.ui.get(
-                "font_name", DEFAULT_SUBTITLE_SETTINGS["font_name"]
+            saved_font = str(
+                config.ui.get(
+                    "subtitle_font",
+                    DEFAULT_SUBTITLE_SETTINGS["subtitle_font"],
+                )
+                or ""
             )
-            saved_font_name_index = 0
-            if saved_font_name in font_names:
-                saved_font_name_index = font_names.index(saved_font_name)
-            params.font_name = stable_selectbox(
+            saved_font_index = (
+                font_names.index(saved_font) if saved_font in font_names else 0
+            )
+            params.subtitle_font = stable_selectbox(
                 tr("Font"),
                 options=font_names,
-                default_value=font_names[saved_font_name_index] if font_names else "",
-                key="font_name_select",
-                disabled=subtitle_settings_disabled,
+                default_value=font_names[saved_font_index] if font_names else "",
+                key="subtitle_font_select",
+                help=tr("Font Help"),
+                disabled=disabled,
             )
-            _set_runtime_config("ui", "font_name", params.font_name)
+            _set_runtime_config("ui", "subtitle_font", params.subtitle_font)
 
-            # format_func 会在 Streamlit 测试框架的脚本上下文之外被调用，
-            # 因此翻译文案必须在创建控件前算好，lambda 内只做纯字典查找；
-            # 若在 lambda 内调用 tr()，AppTest 同步控件状态时会因拿不到
-            # session_state 而抛错，导致整页 rerun 判定为异常。
-            subtitle_style_labels = {
-                "standard": tr("Standard Subtitles"),
-                "poetry": tr("Poetry Subtitles"),
+            direction_options = [item.value for item in SubtitleDirection]
+            saved_direction = config.ui.get(
+                "subtitle_direction",
+                DEFAULT_SUBTITLE_SETTINGS["subtitle_direction"],
+            )
+            if saved_direction not in direction_options:
+                saved_direction = DEFAULT_SUBTITLE_SETTINGS["subtitle_direction"]
+            direction_labels = {
+                "horizontal": tr("Horizontal"),
+                "vertical_rtl": tr("Vertical Right to Left"),
+                "vertical_ltr": tr("Vertical Left to Right"),
             }
-            selected_subtitle_style = stable_selectbox(
-                tr("Subtitle Style"),
-                options=subtitle_style_options,
-                default_value=saved_subtitle_style,
-                key="subtitle_style_select",
-                format_func=lambda value: subtitle_style_labels.get(value, value),
-                disabled=subtitle_settings_disabled,
+            params.subtitle_direction = stable_selectbox(
+                tr("Text Direction"),
+                options=direction_options,
+                default_value=saved_direction,
+                key="subtitle_direction_select",
+                format_func=lambda value: direction_labels.get(value, value),
+                help=tr("Text Direction Help"),
+                disabled=disabled,
             )
-            params.subtitle_style = selected_subtitle_style
-            _set_runtime_config("ui", "subtitle_style", params.subtitle_style)
-            standard_position_controls_hidden = params.subtitle_style == "poetry"
-            standard_controls_disabled = (
-                subtitle_settings_disabled or standard_position_controls_hidden
-            )
+            _set_runtime_config("ui", "subtitle_direction", params.subtitle_direction)
 
-            if params.subtitle_style == "poetry":
-                st.caption(tr("Poetry Subtitle Format Help"))
-                poetry_direction_options = [
-                    "right_to_left",
-                    "left_to_right",
-                    "top_to_bottom",
-                ]
-                saved_poetry_direction = config.ui.get(
-                    "poetry_direction",
-                    DEFAULT_SUBTITLE_SETTINGS["poetry_direction"],
+            show_mode_options = [item.value for item in SubtitleShowMode]
+            saved_show_mode = config.ui.get(
+                "subtitle_show_mode",
+                DEFAULT_SUBTITLE_SETTINGS["subtitle_show_mode"],
+            )
+            if saved_show_mode not in show_mode_options:
+                saved_show_mode = DEFAULT_SUBTITLE_SETTINGS["subtitle_show_mode"]
+            show_mode_labels = {
+                "punctuation": tr("Popup (All Punctuation)"),
+                "sentence": tr("Popup (Sentence End)"),
+                "block": tr("Whole Text Display"),
+                "scroll": tr("Continuous Scroll"),
+            }
+            params.subtitle_show_mode = stable_selectbox(
+                tr("Display Mode"),
+                options=show_mode_options,
+                default_value=saved_show_mode,
+                key="subtitle_show_mode_select",
+                format_func=lambda value: show_mode_labels.get(value, value),
+                help=tr("Display Mode Help"),
+                disabled=disabled,
+            )
+            _set_runtime_config("ui", "subtitle_show_mode", params.subtitle_show_mode)
+
+            align_h_options = [item.value for item in SubtitleAlignH]
+            saved_align_h = config.ui.get(
+                "subtitle_align_h",
+                DEFAULT_SUBTITLE_SETTINGS["subtitle_align_h"],
+            )
+            if saved_align_h not in align_h_options:
+                saved_align_h = DEFAULT_SUBTITLE_SETTINGS["subtitle_align_h"]
+            align_v_options = [item.value for item in SubtitleAlignV]
+            saved_align_v = config.ui.get(
+                "subtitle_align_v",
+                DEFAULT_SUBTITLE_SETTINGS["subtitle_align_v"],
+            )
+            if saved_align_v not in align_v_options:
+                saved_align_v = DEFAULT_SUBTITLE_SETTINGS["subtitle_align_v"]
+            align_h_labels = {
+                "left": tr("Align Left"),
+                "center": tr("Align Center"),
+                "right": tr("Align Right"),
+            }
+            align_v_labels = {
+                "top": tr("Align Top"),
+                "middle": tr("Align Middle"),
+                "bottom": tr("Align Bottom"),
+            }
+            alignment_cols = st.columns([0.5, 0.5])
+            with alignment_cols[0]:
+                params.subtitle_align_h = stable_selectbox(
+                    tr("Horizontal Alignment"),
+                    options=align_h_options,
+                    default_value=saved_align_h,
+                    key="subtitle_align_h_select",
+                    format_func=lambda value: align_h_labels.get(value, value),
+                    help=tr("Horizontal Alignment Help"),
+                    disabled=disabled,
                 )
-                if saved_poetry_direction not in poetry_direction_options:
-                    saved_poetry_direction = DEFAULT_SUBTITLE_SETTINGS[
-                        "poetry_direction"
-                    ]
-                poetry_direction_labels = {
-                    "right_to_left": tr("Right to Left"),
-                    "left_to_right": tr("Left to Right"),
-                    "top_to_bottom": tr("Top to Bottom"),
-                }
-                params.poetry_direction = stable_selectbox(
-                    tr("Position"),
-                    options=poetry_direction_options,
-                    default_value=saved_poetry_direction,
-                    key="poetry_direction_select",
-                    format_func=lambda value: poetry_direction_labels.get(
-                        value, value
+                _set_runtime_config("ui", "subtitle_align_h", params.subtitle_align_h)
+            with alignment_cols[1]:
+                params.subtitle_align_v = stable_selectbox(
+                    tr("Vertical Alignment"),
+                    options=align_v_options,
+                    default_value=saved_align_v,
+                    key="subtitle_align_v_select",
+                    format_func=lambda value: align_v_labels.get(value, value),
+                    help=tr("Vertical Alignment Help"),
+                    disabled=disabled,
+                )
+                _set_runtime_config("ui", "subtitle_align_v", params.subtitle_align_v)
+
+            saved_margin_values = []
+            for margin_key in (
+                "subtitle_margin_top",
+                "subtitle_margin_right",
+                "subtitle_margin_bottom",
+                "subtitle_margin_left",
+            ):
+                try:
+                    saved_margin_values.append(
+                        min(25.0, max(0.0, float(config.ui.get(margin_key, 6.0))))
+                    )
+                except (TypeError, ValueError):
+                    saved_margin_values.append(6.0)
+            saved_margins = ",".join(f"{value:g}%" for value in saved_margin_values)
+            st.session_state.setdefault("subtitle_margins_input", str(saved_margins))
+            margins_value = st.text_input(
+                tr("Subtitle Margins"),
+                key="subtitle_margins_input",
+                disabled=disabled,
+                help=tr("Subtitle Margins Help"),
+            )
+            parsed_margins = _parse_subtitle_margins(margins_value)
+            if parsed_margins is None:
+                st.error(tr("Subtitle Margins Invalid"))
+            else:
+                (
+                    params.subtitle_margin_top,
+                    params.subtitle_margin_right,
+                    params.subtitle_margin_bottom,
+                    params.subtitle_margin_left,
+                ) = parsed_margins
+                for key, value in zip(
+                    (
+                        "subtitle_margin_top",
+                        "subtitle_margin_right",
+                        "subtitle_margin_bottom",
+                        "subtitle_margin_left",
                     ),
-                    disabled=subtitle_settings_disabled,
+                    parsed_margins,
+                ):
+                    _set_runtime_config("ui", key, value)
+            color_size_cols = st.columns([0.42, 0.58])
+            with color_size_cols[0]:
+                st.session_state.setdefault(
+                    "subtitle_text_color_picker",
+                    _saved_ui_color(
+                        "subtitle_text_color",
+                        DEFAULT_SUBTITLE_SETTINGS["subtitle_text_color"],
+                    ),
                 )
-                _set_runtime_config("ui", "poetry_direction", params.poetry_direction)
-
-                saved_poetry_margins = config.ui.get(
-                    "poetry_margins", DEFAULT_SUBTITLE_SETTINGS["poetry_margins"]
+                params.subtitle_text_color = st.color_picker(
+                    tr("Text Color"),
+                    key="subtitle_text_color_picker",
+                    help=tr("Text Color Help"),
+                    disabled=disabled,
+                )
+                _set_runtime_config(
+                    "ui", "subtitle_text_color", params.subtitle_text_color
+                )
+            with color_size_cols[1]:
+                saved_font_size = config.ui.get(
+                    "subtitle_font_size",
+                    DEFAULT_SUBTITLE_SETTINGS["subtitle_font_size"],
                 )
                 st.session_state.setdefault(
-                    "poetry_margins_input", str(saved_poetry_margins)
+                    "subtitle_font_size_slider", saved_font_size
                 )
-                poetry_margins_value = st.text_input(
-                    tr("Content Margins (Clockwise)"),
-                    key="poetry_margins_input",
-                    disabled=subtitle_settings_disabled,
-                    help=tr("Content Margins Help"),
-                )
-                parsed_poetry_margins = _parse_poetry_margins(poetry_margins_value)
-                if parsed_poetry_margins is None:
-                    st.error(tr("Content Margins Invalid"))
-                else:
-                    (
-                        params.poetry_margin_top,
-                        params.poetry_margin_right,
-                        params.poetry_margin_bottom,
-                        params.poetry_margin_left,
-                    ) = parsed_poetry_margins
-                    _set_runtime_config("ui", "poetry_margins", poetry_margins_value)
-
-            if not standard_position_controls_hidden:
-                subtitle_positions = [
-                    (tr("Top"), "top"),
-                    (tr("Center"), "center"),
-                    (tr("Bottom"), "bottom"),
-                    (tr("Custom"), "custom"),
-                ]
-                saved_subtitle_position = config.ui.get(
-                    "subtitle_position", DEFAULT_SUBTITLE_SETTINGS["subtitle_position"]
-                )
-                saved_position_index = 2
-                for i, (_, pos_value) in enumerate(subtitle_positions):
-                    if pos_value == saved_subtitle_position:
-                        saved_position_index = i
-                        break
-                selected_subtitle_position = stable_selectbox(
-                    tr("Position"),
-                    options=[value for _, value in subtitle_positions],
-                    default_value=subtitle_positions[saved_position_index][1],
-                    key="subtitle_position_select",
-                    format_func=lambda value: dict(
-                        (v, label) for label, v in subtitle_positions
-                    )[value],
-                    disabled=subtitle_settings_disabled,
-                )
-                params.subtitle_position = selected_subtitle_position
-                _set_runtime_config("ui", "subtitle_position", params.subtitle_position)
-
-                if params.subtitle_position == "custom":
-                    saved_custom_position = config.ui.get(
-                        "custom_position", DEFAULT_SUBTITLE_SETTINGS["custom_position"]
-                    )
-                    st.session_state.setdefault(
-                        "custom_position_input", str(saved_custom_position)
-                    )
-                    custom_position = st.text_input(
-                        tr("Custom Position (% from top)"),
-                        key="custom_position_input",
-                        disabled=subtitle_settings_disabled,
-                    )
-                    try:
-                        params.custom_position = float(custom_position)
-                        if params.custom_position < 0 or params.custom_position > 100:
-                            st.error(tr("Please enter a value between 0 and 100"))
-                        else:
-                            _set_runtime_config(
-                                "ui", "custom_position", params.custom_position
-                            )
-                    except ValueError:
-                        st.error(tr("Please enter a valid number"))
-
-            # 非中文语言的颜色标签通常比中文更长。为颜色选择器保留适当宽度，
-            # 避免标签换行，同时仍给字号滑块保留足够的可操作空间。
-            font_cols = st.columns([0.42, 0.58])
-            with font_cols[0]:
-                saved_text_fore_color = config.ui.get(
-                    "text_fore_color", DEFAULT_SUBTITLE_SETTINGS["text_fore_color"]
-                )
-                st.session_state.setdefault("font_color_picker", saved_text_fore_color)
-                params.text_fore_color = st.color_picker(
-                    tr("Font Color"),
-                    key="font_color_picker",
-                    disabled=subtitle_settings_disabled,
-                )
-                _set_runtime_config("ui", "text_fore_color", params.text_fore_color)
-
-            with font_cols[1]:
-                saved_font_size = config.ui.get(
-                    "font_size", DEFAULT_SUBTITLE_SETTINGS["font_size"]
-                )
-                st.session_state.setdefault("font_size_slider", saved_font_size)
-                params.font_size = st.slider(
+                params.subtitle_font_size = st.slider(
                     tr("Font Size"),
                     30,
                     100,
-                    key="font_size_slider",
-                    disabled=subtitle_settings_disabled,
+                    key="subtitle_font_size_slider",
+                    help=tr("Font Size Help"),
+                    disabled=disabled,
                 )
-                _set_runtime_config("ui", "font_size", params.font_size)
+                _set_runtime_config(
+                    "ui", "subtitle_font_size", params.subtitle_font_size
+                )
 
             stroke_cols = st.columns([0.42, 0.58])
             with stroke_cols[0]:
                 st.session_state.setdefault(
-                    "stroke_color_picker",
+                    "subtitle_stroke_color_picker",
                     _saved_ui_color(
-                        "stroke_color", DEFAULT_SUBTITLE_SETTINGS["stroke_color"]
+                        "subtitle_stroke_color",
+                        DEFAULT_SUBTITLE_SETTINGS["subtitle_stroke_color"],
                     ),
                 )
-                params.stroke_color = st.color_picker(
+                params.subtitle_stroke_color = st.color_picker(
                     tr("Stroke Color"),
-                    key="stroke_color_picker",
-                    disabled=subtitle_settings_disabled,
+                    key="subtitle_stroke_color_picker",
+                    help=tr("Stroke Color Help"),
+                    disabled=disabled,
                 )
-                _set_runtime_config("ui", "stroke_color", params.stroke_color)
+                _set_runtime_config(
+                    "ui", "subtitle_stroke_color", params.subtitle_stroke_color
+                )
             with stroke_cols[1]:
                 st.session_state.setdefault(
-                    "stroke_width_slider",
+                    "subtitle_stroke_width_slider",
                     _saved_ui_number(
-                        "stroke_width",
-                        DEFAULT_SUBTITLE_SETTINGS["stroke_width"],
+                        "subtitle_stroke_width",
+                        DEFAULT_SUBTITLE_SETTINGS["subtitle_stroke_width"],
                         0.0,
                         10.0,
                     ),
                 )
-                params.stroke_width = st.slider(
+                params.subtitle_stroke_width = st.slider(
                     tr("Stroke Width"),
                     0.0,
                     10.0,
-                    key="stroke_width_slider",
-                    disabled=subtitle_settings_disabled,
+                    key="subtitle_stroke_width_slider",
+                    help=tr("Stroke Width Help"),
+                    disabled=disabled,
                 )
-                _set_runtime_config("ui", "stroke_width", params.stroke_width)
+                _set_runtime_config(
+                    "ui", "subtitle_stroke_width", params.subtitle_stroke_width
+                )
 
-            # 背景开关的本地化名称普遍比颜色标签更长，因此让开关占据略多空间。
-            subtitle_bg_cols = st.columns([0.55, 0.45])
-            saved_subtitle_background_enabled = config.ui.get(
+            saved_background_enabled = config.ui.get(
                 "subtitle_background_enabled",
                 DEFAULT_SUBTITLE_SETTINGS["subtitle_background_enabled"],
             )
             st.session_state.setdefault(
                 "subtitle_background_enabled_checkbox",
-                saved_subtitle_background_enabled,
+                saved_background_enabled,
             )
-            with subtitle_bg_cols[0]:
-                subtitle_background_enabled = st.checkbox(
-                    tr("Enable Subtitle Background"),
-                    key="subtitle_background_enabled_checkbox",
-                    disabled=standard_controls_disabled,
-                )
+            background_enabled = st.checkbox(
+                tr("Enable Subtitle Background"),
+                key="subtitle_background_enabled_checkbox",
+                help=tr("Enable Subtitle Background Help"),
+                disabled=disabled,
+            )
             _set_runtime_config(
                 "ui",
                 "subtitle_background_enabled",
-                subtitle_background_enabled,
+                background_enabled,
             )
-
-            # 背景颜色和圆角样式都从属于字幕背景开关。子控件始终保留在页面中，
-            # 父开关关闭时统一禁用，避免一个控件消失而另一个控件禁用造成布局跳动。
-            # 颜色值仍保存在 UI 配置中，重新启用背景后可以恢复用户之前的选择；
-            # 传给生成服务的参数则设为 False，确保关闭状态不会实际渲染背景。
-            saved_subtitle_background_color = config.ui.get(
-                "subtitle_background_color",
-                DEFAULT_SUBTITLE_SETTINGS["subtitle_background_color"],
-            )
-            st.session_state.setdefault(
-                "subtitle_background_color_picker",
-                saved_subtitle_background_color,
-            )
-            with subtitle_bg_cols[1]:
-                selected_subtitle_background_color = st.color_picker(
+            background_style_cols = st.columns([0.5, 0.5])
+            with background_style_cols[0]:
+                st.session_state.setdefault(
+                    "subtitle_background_color_picker",
+                    _saved_ui_color(
+                        "subtitle_background_color",
+                        DEFAULT_SUBTITLE_SETTINGS["subtitle_background_color"],
+                    ),
+                )
+                params.subtitle_background_color = st.color_picker(
                     tr("Subtitle Background Color"),
                     key="subtitle_background_color_picker",
-                    disabled=standard_controls_disabled
-                    or not subtitle_background_enabled,
+                    help=tr("Subtitle Background Color Help"),
+                    disabled=disabled or not background_enabled,
                 )
-            _set_runtime_config(
-                "ui",
-                "subtitle_background_color",
-                selected_subtitle_background_color,
-            )
-            params.text_background_color = (
-                selected_subtitle_background_color
-                if subtitle_background_enabled
-                else False
-            )
-
-            saved_rounded_subtitle_background = config.ui.get(
-                "rounded_subtitle_background",
-                DEFAULT_SUBTITLE_SETTINGS["rounded_subtitle_background"],
-            )
-            # 背景关闭时，圆角背景没有可渲染的底色。这里禁用控件但保留原配置，
-            # 用户下次重新开启字幕背景后，可以继续使用之前保存的圆角偏好。
-            rounded_background_disabled = (
-                standard_controls_disabled or not subtitle_background_enabled
-            )
-            st.session_state.setdefault(
-                "rounded_subtitle_background_checkbox",
-                saved_rounded_subtitle_background,
-            )
-            selected_rounded_subtitle_background = st.checkbox(
-                tr("Rounded Subtitle Background"),
-                help=tr("Rounded Subtitle Background Help"),
-                disabled=rounded_background_disabled,
-                key="rounded_subtitle_background_checkbox",
-            )
-            params.rounded_subtitle_background = (
-                selected_rounded_subtitle_background
-                if subtitle_background_enabled
-                else False
-            )
-            if not subtitle_settings_disabled and subtitle_background_enabled:
                 _set_runtime_config(
                     "ui",
-                    "rounded_subtitle_background",
-                    selected_rounded_subtitle_background,
+                    "subtitle_background_color",
+                    params.subtitle_background_color,
+                )
+            with background_style_cols[1]:
+                background_style_options = [
+                    item.value for item in SubtitleBackgroundStyle
+                ]
+                saved_background_style = config.ui.get(
+                    "subtitle_background_style",
+                    DEFAULT_SUBTITLE_SETTINGS["subtitle_background_style"],
+                )
+                if saved_background_style not in background_style_options:
+                    saved_background_style = DEFAULT_SUBTITLE_SETTINGS[
+                        "subtitle_background_style"
+                    ]
+                background_style_labels = {
+                    "rectangle": tr("Rectangle Background"),
+                    "rounded_translucent": tr("Rounded Translucent Background"),
+                }
+                params.subtitle_background_style = stable_selectbox(
+                    tr("Background Style"),
+                    options=background_style_options,
+                    default_value=saved_background_style,
+                    key="subtitle_background_style_select",
+                    format_func=lambda value: background_style_labels.get(value, value),
+                    help=tr("Background Style Help"),
+                    disabled=disabled or not background_enabled,
+                )
+                _set_runtime_config(
+                    "ui", "subtitle_background_style", params.subtitle_background_style
                 )
 
+            params.subtitle_background_enabled = background_enabled
+
             if subtitles.config.subtitle_colors_are_indistinguishable(params):
-                # 同色配置仍然是合法的用户选择，因此只在字幕设置区域就近提示，
-                # 不阻止生成。用户可以根据实际视觉需求决定是否继续。
                 st.warning(tr("Subtitle Colors Are Indistinguishable"))
 
             subtitle_preview_text = params.video_script or params.video_subject
-            selected_font_path = os.path.join(font_dir, params.font_name)
+            selected_font_path = os.path.join(font_dir, params.subtitle_font)
             if (
                 params.subtitle_enabled
                 and subtitle_preview_text
-                and not video.subtitle_font_supports_text(
+                and not subtitles.fonts.font_supports_text(
                     selected_font_path, subtitle_preview_text
                 )
             ):
@@ -5976,21 +5982,25 @@ def _render_generation_controls(
             st.error(tr("Please Select a Valid Video Source"))
             st.stop()
 
-        if params.subtitle_enabled and params.subtitle_style == "poetry":
-            try:
-                subtitles.script.parse_script(params.video_script, header_line_count=2)
-            except subtitles.script.ScriptParseError as exc:
-                _remove_active_generation_task(task_id)
-                st.error(tr(str(exc)))
-                st.stop()
-            if _parse_poetry_margins(
-                st.session_state.get(
-                    "poetry_margins_input",
-                    DEFAULT_SUBTITLE_SETTINGS["poetry_margins"],
+        if params.subtitle_enabled:
+            if params.subtitle_header_line_count > 0:
+                try:
+                    subtitles.script.parse_script(
+                        params.video_script,
+                        header_line_count=params.subtitle_header_line_count,
+                    )
+                except SubtitleException as exc:
+                    _remove_active_generation_task(task_id)
+                    st.error(tr(str(exc)))
+                    st.stop()
+            if (
+                _parse_subtitle_margins(
+                    st.session_state.get("subtitle_margins_input", "6%,6%,6%,6%")
                 )
-            ) is None:
+                is None
+            ):
                 _remove_active_generation_task(task_id)
-                st.error(tr("Content Margins Invalid"))
+                st.error(tr("Subtitle Margins Invalid"))
                 st.stop()
 
         if params.video_source == "pexels" and not config.app.get(

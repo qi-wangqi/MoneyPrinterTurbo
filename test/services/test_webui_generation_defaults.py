@@ -99,10 +99,12 @@ def test_reusable_generation_settings_survive_a_new_webui_session():
         _widget_by_key(first_session.checkbox, "subtitle_enabled_checkbox").set_value(
             True
         )
-        _widget_by_key(first_session.color_picker, "stroke_color_picker").set_value(
-            "#123456"
+        _widget_by_key(
+            first_session.color_picker, "subtitle_stroke_color_picker"
+        ).set_value("#123456")
+        _widget_by_key(first_session.slider, "subtitle_stroke_width_slider").set_value(
+            2.5
         )
-        _widget_by_key(first_session.slider, "stroke_width_slider").set_value(2.5)
         first_session.run()
 
         # Aspect is a per-source preference: Coverr's common landscape default
@@ -125,9 +127,9 @@ def test_reusable_generation_settings_survive_a_new_webui_session():
         _widget_by_key(first_session.selectbox, "bgm_type_select").set_value(
             "sonilo"
         ).run()
-        _widget_by_key(
-            first_session.text_input, "sonilo_bgm_prompt_input"
-        ).set_value("Bright acoustic underscore").run()
+        _widget_by_key(first_session.text_input, "sonilo_bgm_prompt_input").set_value(
+            "Bright acoustic underscore"
+        ).run()
         _widget_by_key(first_session.selectbox, "bgm_type_select").set_value(
             "elevenlabs"
         ).run()
@@ -160,8 +162,8 @@ def test_reusable_generation_settings_survive_a_new_webui_session():
             "sonilo_bgm_prompt": "Bright acoustic underscore",
             "elevenlabs_music_prompt": "Calm cinematic underscore",
             "subtitle_enabled": True,
-            "stroke_color": "#123456",
-            "stroke_width": 2.5,
+            "subtitle_stroke_color": "#123456",
+            "subtitle_stroke_width": 2.5,
         }
         assert {key: test_ui_config.get(key) for key in expected_defaults} == (
             expected_defaults
@@ -174,80 +176,104 @@ def test_reusable_generation_settings_survive_a_new_webui_session():
         assert "video_terms" not in test_app_config
 
         second_session = _new_app()
-        assert _widget_by_key(
-            second_session.selectbox, "script_language_select"
-        ).value == "en-US"
-        assert _widget_by_key(
-            second_session.slider, "paragraph_number_input"
-        ).value == 3
-        assert _widget_by_key(
-            second_session.text_area, "video_script_prompt"
-        ).value == "Keep the hook concise."
-        assert _widget_by_key(
-            second_session.text_area, "custom_system_prompt"
-        ).value == "Write a factual short-video script."
-        assert _widget_by_key(
-            second_session.selectbox, "video_concat_mode_select"
-        ).value == "sequential"
-        assert _widget_by_key(
-            second_session.selectbox, "video_transition_mode_select"
-        ).value == "FadeIn"
-        assert _widget_by_key(
-            second_session.selectbox, "video_aspect_for_pexels"
-        ).value == "16:9"
-        assert _widget_by_key(
-            second_session.selectbox, "video_fit_mode_select"
-        ).value == "contain"
+        assert (
+            _widget_by_key(second_session.selectbox, "script_language_select").value
+            == "en-US"
+        )
+        assert (
+            _widget_by_key(second_session.slider, "paragraph_number_input").value == 3
+        )
+        assert (
+            _widget_by_key(second_session.text_area, "video_script_prompt").value
+            == "Keep the hook concise."
+        )
+        assert (
+            _widget_by_key(second_session.text_area, "custom_system_prompt").value
+            == "Write a factual short-video script."
+        )
+        assert (
+            _widget_by_key(second_session.selectbox, "video_concat_mode_select").value
+            == "sequential"
+        )
+        assert (
+            _widget_by_key(
+                second_session.selectbox, "video_transition_mode_select"
+            ).value
+            == "FadeIn"
+        )
+        assert (
+            _widget_by_key(second_session.selectbox, "video_aspect_for_pexels").value
+            == "16:9"
+        )
+        assert (
+            _widget_by_key(second_session.selectbox, "video_fit_mode_select").value
+            == "contain"
+        )
         _widget_by_key(second_session.selectbox, "video_source_select").set_value(
             "coverr"
         ).run()
-        assert _widget_by_key(
-            second_session.selectbox, "video_aspect_for_coverr"
-        ).value == "9:16"
+        assert (
+            _widget_by_key(second_session.selectbox, "video_aspect_for_coverr").value
+            == "9:16"
+        )
         _widget_by_key(second_session.selectbox, "video_source_select").set_value(
             "pexels"
         ).run()
-        assert _widget_by_key(
-            second_session.selectbox, "video_clip_duration_select"
-        ).value == 7
-        assert _widget_by_key(
-            second_session.slider, "video_clip_speed_slider"
-        ).value == 1.5
+        assert (
+            _widget_by_key(second_session.selectbox, "video_clip_duration_select").value
+            == 7
+        )
+        assert (
+            _widget_by_key(second_session.slider, "video_clip_speed_slider").value
+            == 1.5
+        )
         assert _widget_by_key(second_session.selectbox, "video_count_select").value == 3
-        assert _widget_by_key(
-            second_session.selectbox, "voice_volume_select"
-        ).value == 1.5
-        assert _widget_by_key(
-            second_session.selectbox, "voice_rate_select"
-        ).value == 1.2
+        assert (
+            _widget_by_key(second_session.selectbox, "voice_volume_select").value == 1.5
+        )
+        assert (
+            _widget_by_key(second_session.selectbox, "voice_rate_select").value == 1.2
+        )
         assert _widget_by_key(second_session.selectbox, "bgm_type_select").value == (
             "custom"
         )
         assert _widget_by_key(second_session.selectbox, "bgm_volume_select").value == (
             0.4
         )
-        assert _widget_by_key(
-            second_session.text_input, "custom_bgm_file_input"
-        ).value == "example.mp3"
+        assert (
+            _widget_by_key(second_session.text_input, "custom_bgm_file_input").value
+            == "example.mp3"
+        )
         _widget_by_key(second_session.selectbox, "bgm_type_select").set_value(
             "sonilo"
         ).run()
-        assert _widget_by_key(
-            second_session.text_input, "sonilo_bgm_prompt_input"
-        ).value == "Bright acoustic underscore"
+        assert (
+            _widget_by_key(second_session.text_input, "sonilo_bgm_prompt_input").value
+            == "Bright acoustic underscore"
+        )
         _widget_by_key(second_session.selectbox, "bgm_type_select").set_value(
             "elevenlabs"
         ).run()
-        assert _widget_by_key(
-            second_session.text_input, "elevenlabs_music_prompt_input"
-        ).value == "Calm cinematic underscore"
-        assert _widget_by_key(
-            second_session.checkbox, "subtitle_enabled_checkbox"
-        ).value is True
-        assert _widget_by_key(
-            second_session.color_picker, "stroke_color_picker"
-        ).value == "#123456"
-        assert _widget_by_key(second_session.slider, "stroke_width_slider").value == 2.5
+        assert (
+            _widget_by_key(
+                second_session.text_input, "elevenlabs_music_prompt_input"
+            ).value
+            == "Calm cinematic underscore"
+        )
+        assert (
+            _widget_by_key(second_session.checkbox, "subtitle_enabled_checkbox").value
+            is True
+        )
+        assert (
+            _widget_by_key(
+                second_session.color_picker, "subtitle_stroke_color_picker"
+            ).value
+            == "#123456"
+        )
+        assert (
+            _widget_by_key(second_session.slider, "subtitle_stroke_width_slider").value
+            == 2.5
+        )
 
         # Per-video content must not leak into a new session.
         assert second_session.session_state["video_subject"] == ""
@@ -264,11 +290,15 @@ def test_reusable_generation_settings_survive_a_new_webui_session():
         ).click().run()
         assert {
             key: test_ui_config[key]
-            for key in ("subtitle_enabled", "stroke_color", "stroke_width")
+            for key in (
+                "subtitle_enabled",
+                "subtitle_stroke_color",
+                "subtitle_stroke_width",
+            )
         } == {
             "subtitle_enabled": True,
-            "stroke_color": "#000000",
-            "stroke_width": 1.5,
+            "subtitle_stroke_color": "#000000",
+            "subtitle_stroke_width": 1.5,
         }
 
 
@@ -299,8 +329,8 @@ def test_invalid_saved_generation_settings_fall_back_without_breaking_webui():
         bgm_type="not-a-source",
         bgm_volume=999,
         subtitle_enabled="false",
-        stroke_color="not-a-color",
-        stroke_width="inf",
+        subtitle_stroke_color="not-a-color",
+        subtitle_stroke_width="inf",
         loomloom_candidate_count=0,
         loomloom_script_duration_seconds=9999,
         loomloom_video_scene_count="nan",
@@ -336,8 +366,11 @@ def test_invalid_saved_generation_settings_fall_back_without_breaking_webui():
     assert _widget_by_key(app.selectbox, "bgm_type_select").value == "random"
     assert _widget_by_key(app.selectbox, "bgm_volume_select").value == 0.2
     assert _widget_by_key(app.checkbox, "subtitle_enabled_checkbox").value is False
-    assert _widget_by_key(app.color_picker, "stroke_color_picker").value == "#000000"
-    assert _widget_by_key(app.slider, "stroke_width_slider").value == 1.5
+    assert (
+        _widget_by_key(app.color_picker, "subtitle_stroke_color_picker").value
+        == "#000000"
+    )
+    assert _widget_by_key(app.slider, "subtitle_stroke_width_slider").value == 1.5
     assert app.session_state["loomloom_candidate_count"] == 1
     assert app.session_state["loomloom_script_duration_seconds"] == 600
     assert app.session_state["loomloom_video_scene_count"] == 1
@@ -365,9 +398,10 @@ def test_seedance_source_shows_unchecked_paid_task_confirmation():
     assert _widget_by_key(app.selectbox, "video_source_select").value == (
         "volcengine_seedance"
     )
-    assert _widget_by_key(
-        app.checkbox, "volcengine_seedance_confirm_charge"
-    ).value is False
+    assert (
+        _widget_by_key(app.checkbox, "volcengine_seedance_confirm_charge").value
+        is False
+    )
 
 
 def test_loomloom_tuning_survives_restart_without_persisting_payment_state():
@@ -425,15 +459,24 @@ def test_loomloom_tuning_survives_restart_without_persisting_payment_state():
         assert "loomloom_video_confirm_charge" not in test_ui_config
 
         second_session = _new_app()
-        assert _widget_by_key(
-            second_session.number_input, "loomloom_candidate_count"
-        ).value == 4
-        assert _widget_by_key(
-            second_session.number_input, "loomloom_script_duration_seconds"
-        ).value == 120
-        assert _widget_by_key(
-            second_session.number_input, "loomloom_video_scene_count"
-        ).value == 3
+        assert (
+            _widget_by_key(
+                second_session.number_input, "loomloom_candidate_count"
+            ).value
+            == 4
+        )
+        assert (
+            _widget_by_key(
+                second_session.number_input, "loomloom_script_duration_seconds"
+            ).value
+            == 120
+        )
+        assert (
+            _widget_by_key(
+                second_session.number_input, "loomloom_video_scene_count"
+            ).value
+            == 3
+        )
         assert second_session.session_state["loomloom_video_confirm_charge"] is False
 
 
@@ -475,6 +518,9 @@ def test_script_order_constraint_does_not_replace_saved_concat_preference():
         # preference, not the derived value shown while script-order matching ran.
         test_app_config["match_materials_to_script"] = False
         unconstrained_session = _new_app()
-        assert _widget_by_key(
-            unconstrained_session.selectbox, "video_concat_mode_select"
-        ).value == "random"
+        assert (
+            _widget_by_key(
+                unconstrained_session.selectbox, "video_concat_mode_select"
+            ).value
+            == "random"
+        )

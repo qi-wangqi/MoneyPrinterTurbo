@@ -13,6 +13,7 @@ from loguru import logger
 
 from app.config import config
 from app.models import const
+from app.models.exception import SubtitleException
 from app.models.schema import VideoConcatMode, VideoParams
 from app.services import bgm as bgm_service
 from app.services import (
@@ -579,13 +580,15 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
     subtitle_path = path.join(utils.task_dir(task_id), "subtitle.srt")
     subtitle_provider = config.app.get("subtitle_provider", "edge").strip().lower()
     logger.info(f"\n\n## generating subtitle, provider: {subtitle_provider}")
-    poetry_mode = params.subtitle_style == "poetry"
-    segmentation = "line" if poetry_mode else "punctuation"
+    segmentation = subtitles.config.resolve_cue_segmentation(params)
+    use_line_cues = segmentation is subtitles.models.SubtitleCueSegmentation.physical_line
 
     if not subtitle_provider:
         logger.info("subtitle provider is empty, skip subtitle generation")
-        if poetry_mode:
-            _mark_task_failed(task_id, "subtitle", "subtitle provider is not configured")
+        if use_line_cues:
+            _mark_task_failed(
+                task_id, "subtitle", "subtitle provider is not configured"
+            )
         return ""
 
     if sub_maker is None and subtitle_provider != "whisper":
@@ -596,11 +599,11 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
             "subtitle maker is missing, skip subtitle generation for provider: "
             f"{subtitle_provider}"
         )
-        if poetry_mode:
+        if use_line_cues:
             _mark_task_failed(
                 task_id,
                 "subtitle",
-                "poetry subtitles require automatic TTS or the Whisper subtitle provider",
+                "line-cue subtitles require automatic TTS or the Whisper subtitle provider",
             )
         return ""
 
@@ -620,18 +623,18 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
                 "edge subtitle generation did not produce a subtitle file; "
                 "skip subtitles without falling back to whisper"
             )
-            if poetry_mode:
+            if use_line_cues:
                 _mark_task_failed(
                     task_id,
                     "subtitle",
-                    "Edge subtitles did not produce timed cues for poetry mode",
+                    "Edge subtitles did not produce timed cues for line-cue mode",
                 )
             return ""
 
     if subtitle_provider == "whisper":
         subtitles.srt.create(audio_file=audio_file, subtitle_file=subtitle_path)
         logger.info("\n\n## correcting subtitle")
-        if poetry_mode:
+        if use_line_cues:
             subtitles.srt.correct(
                 subtitle_file=subtitle_path,
                 video_script=video_script,
@@ -645,11 +648,11 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
     subtitle_lines = subtitles.srt.file_to_subtitles(subtitle_path)
     if not subtitle_lines:
         logger.warning(f"subtitle file is invalid: {subtitle_path}")
-        if poetry_mode:
+        if use_line_cues:
             _mark_task_failed(
                 task_id,
                 "subtitle",
-                "failed to generate timed cues for poetry subtitles",
+                "failed to generate timed cues for line-cue subtitles",
             )
         return ""
 
@@ -1365,12 +1368,15 @@ def _run_pipeline(
         )
         return {"script": video_script}
 
-    # 唐诗模式以“前两个非空行 + 正文行”为契约。这里在消耗 TTS/素材额度前
+    # 带头部模式以“N 个非空头部行 + 正文行”为契约。这里在消耗 TTS/素材额度前
     # 校验格式，避免用户粘贴普通文案后先跑完配音才发现无法渲染。
-    if params.subtitle_enabled and params.subtitle_style == "poetry":
+    if params.subtitle_enabled and params.subtitle_header_line_count > 0:
         try:
-            subtitles.script.parse_script(video_script, header_line_count=2)
-        except subtitles.script.ScriptParseError as exc:
+            subtitles.script.parse_script(
+                video_script,
+                header_line_count=params.subtitle_header_line_count,
+            )
+        except SubtitleException as exc:
             return _mark_task_failed(task_id, "subtitle", str(exc))
 
     # 2. Generate terms

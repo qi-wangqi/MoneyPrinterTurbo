@@ -50,37 +50,41 @@ class TestVideoParams(unittest.TestCase):
         self.assertEqual(params.video_clip_duration, 1)
         self.assertEqual(params.video_count, 1)
 
-    def test_poetry_subtitle_fields_have_safe_defaults_and_limits(self):
-        params = VideoParams(video_subject="Poetry")
+    def test_subtitle_fields_have_safe_defaults_and_limits(self):
+        params = VideoParams(video_subject="Subtitles")
 
-        self.assertEqual(params.subtitle_style, "standard")
-        self.assertEqual(params.poetry_direction, "right_to_left")
+        self.assertEqual(params.subtitle_direction, "horizontal")
+        self.assertEqual(params.subtitle_show_mode, "punctuation")
+        self.assertEqual(params.subtitle_align_h, "center")
+        self.assertEqual(params.subtitle_align_v, "bottom")
         for margin_name in (
-            "poetry_margin_top",
-            "poetry_margin_right",
-            "poetry_margin_bottom",
-            "poetry_margin_left",
+            "subtitle_margin_top",
+            "subtitle_margin_right",
+            "subtitle_margin_bottom",
+            "subtitle_margin_left",
         ):
             self.assertEqual(getattr(params, margin_name), 6.0)
 
         params = VideoParams(
-            video_subject="Poetry",
-            subtitle_style="poetry",
-            poetry_direction="top_to_bottom",
-            poetry_margin_top=0,
-            poetry_margin_right=25,
-            poetry_margin_bottom=12.5,
-            poetry_margin_left=8,
+            video_subject="Subtitles",
+            subtitle_direction="vertical_rtl",
+            subtitle_show_mode="scroll",
+            subtitle_align_h="right",
+            subtitle_align_v="top",
+            subtitle_margin_top=0,
+            subtitle_margin_right=25,
+            subtitle_margin_bottom=12.5,
+            subtitle_margin_left=8,
         )
-        self.assertEqual(params.poetry_margin_top, 0.0)
-        self.assertEqual(params.poetry_margin_right, 25.0)
+        self.assertEqual(params.subtitle_margin_top, 0.0)
+        self.assertEqual(params.subtitle_margin_right, 25.0)
 
         with self.assertRaises(ValidationError):
-            VideoParams(video_subject="Poetry", subtitle_style="classic")
+            VideoParams(video_subject="Subtitles", subtitle_direction="diagonal")
         with self.assertRaises(ValidationError):
-            VideoParams(video_subject="Poetry", poetry_direction="diagonal")
+            VideoParams(video_subject="Subtitles", subtitle_show_mode="line")
         with self.assertRaises(ValidationError):
-            VideoParams(video_subject="Poetry", poetry_margin_top=30)
+            VideoParams(video_subject="Subtitles", subtitle_margin_top=30)
 
 
 if __name__ == "__main__":

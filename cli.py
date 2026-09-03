@@ -21,12 +21,6 @@ DEFAULT_VOICE_NAME = "zh-CN-XiaoxiaoNeural-Female"
 # 对应 webui/Main.py 的 VOICE_MODE_NONE 和 VOICE_MODE_UPLOAD。两端目前没有
 # 共享这些常量，因此在这里保留字面值并注明来源。
 UI_VOICE_MODE_NONE = "none"
-# 字幕位置的内置默认值。VideoParams 也有同名默认值，但它是 Pydantic 字段
-# 默认，只在模块导入时读取一次 config.ui：此时 config.toml 里的非法值会被
-# 直接冻结进模型，既不会校验也无法在测试中替换。CLI 因此自己保存一份，
-# 保证“非法保存值回退到默认值”对命令行始终成立。
-DEFAULT_SUBTITLE_POSITION = "bottom"
-DEFAULT_CUSTOM_POSITION = 70.0
 UI_VOICE_MODE_UPLOAD = "upload"
 # 这两种保存的配音方式都表示不要自动配音。
 UI_VOICE_MODES_WITHOUT_TTS = frozenset({UI_VOICE_MODE_NONE, UI_VOICE_MODE_UPLOAD})
@@ -73,41 +67,59 @@ def _paragraph_count(value: str) -> int:
 def _non_negative_float(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed < 0:
-        raise argparse.ArgumentTypeError(f"value must be a finite number >= 0, got {value!r}")
+        raise argparse.ArgumentTypeError(
+            f"value must be a finite number >= 0, got {value!r}"
+        )
     return parsed
 
 
 def _positive_float(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed <= 0:
-        raise argparse.ArgumentTypeError(f"value must be a finite number > 0, got {value!r}")
-    return parsed
-
-
-def _percent_position(value: str) -> float:
-    parsed = float(value)
-    if not math.isfinite(parsed) or parsed < 0 or parsed > 100:
         raise argparse.ArgumentTypeError(
-            f"custom-position must be a finite number between 0 and 100, got {value!r}"
+            f"value must be a finite number > 0, got {value!r}"
         )
     return parsed
 
 
 def _hex_color(value: str) -> str:
-    if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", value):
         raise argparse.ArgumentTypeError(
-            f"color must use #RRGGBB format, got {value!r}"
+            f"color must use #RRGGBB or #RRGGBBAA format, got {value!r}"
         )
     return value
 
 
-def _subtitle_position(value: str) -> str:
-    """校验保存的字幕位置，取值范围与命令行参数保持一致。"""
-    if value not in ("top", "center", "bottom", "custom"):
+def _subtitle_margin(value: str) -> tuple[float, float, float, float]:
+    """解析字幕区域外边距：上、右、下、左，均为百分比。"""
+    parts = re.split(r"[，,]", value.strip())
+    if len(parts) != 4:
         raise argparse.ArgumentTypeError(
-            f"subtitle-position must be one of: top, center, bottom, custom, got {value!r}"
+            "subtitle-margin must contain 4 comma-separated percentages"
         )
-    return value
+    parsed = []
+    for part in parts:
+        try:
+            number = float(part.strip().removesuffix("%"))
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"subtitle-margin must use numeric percentages, got {value!r}"
+            ) from exc
+        if not math.isfinite(number) or not 0 <= number <= 25:
+            raise argparse.ArgumentTypeError(
+                "subtitle-margin percentages must be between 0 and 25"
+            )
+        parsed.append(number)
+    return tuple(parsed)
+
+
+def _margin_percent(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or not 0 <= parsed <= 25:
+        raise argparse.ArgumentTypeError(
+            f"margin percentage must be between 0 and 25, got {value!r}"
+        )
+    return parsed
 
 
 def _task_id(value: str) -> str:
@@ -211,7 +223,7 @@ Batch manifests:
   The manifest path is relative to the current working directory. Relative
   custom_audio_file and local video_materials[].url values declared in a manifest are
   relative to the manifest directory. Relative paths supplied by CLI options remain
-  relative to the current working directory. bgm_file and font_name keep their managed
+  relative to the current working directory. bgm_file and subtitle_font keep their managed
   storage/resource lookup rules. --stop-at is a batch-wide CLI option. The summary has
   total, succeeded, failed, and tasks keys; every task entry has index, task_id,
   status, result, failed_stage, and error.
@@ -238,9 +250,7 @@ Batch manifests:
     content_group.add_argument(
         "--video-language",
         default=None,
-        help=(
-            "script language code, such as zh-CN or en-US (default: auto-detect)"
-        ),
+        help=("script language code, such as zh-CN or en-US (default: auto-detect)"),
     )
     content_group.add_argument(
         "--paragraph-number",
@@ -438,69 +448,96 @@ Batch manifests:
         ),
     )
     subtitle_group.add_argument(
-        "--font-name",
+        "--subtitle-font",
         default=None,
         help=(
             "subtitle font filename inside resource/fonts "
-            "(default: [ui].font_name from config.toml; "
-            "STHeitiMedium.ttc when unset)"
+            "(default: [ui].subtitle_font from config.toml; "
+            "MicrosoftYaHeiBold.ttc when unset)"
         ),
     )
     subtitle_group.add_argument(
-        "--subtitle-position",
-        choices=["top", "center", "bottom", "custom"],
+        "--subtitle-direction",
+        choices=[
+            "horizontal",
+            "vertical_rtl",
+            "vertical_ltr",
+        ],
+        default=None,
+        help="subtitle text direction (default: horizontal)",
+    )
+    subtitle_group.add_argument(
+        "--subtitle-show-mode",
+        choices=[
+            "punctuation",
+            "sentence",
+            "block",
+            "scroll",
+        ],
+        default=None,
+        help="subtitle display mode (default: punctuation)",
+    )
+    subtitle_group.add_argument(
+        "--subtitle-align-h",
+        choices=["left", "center", "right"],
+        default=None,
+        help="display block horizontal alignment (default: center)",
+    )
+    subtitle_group.add_argument(
+        "--subtitle-align-v",
+        choices=["top", "middle", "bottom"],
+        default=None,
+        help="display block vertical alignment (default: bottom)",
+    )
+    subtitle_group.add_argument(
+        "--subtitle-margin",
+        type=_subtitle_margin,
+        default=None,
+        metavar="TOP,RIGHT,BOTTOM,LEFT",
+        help=(
+            "subtitle viewport margins in top/right/bottom/left order; each "
+            "value is 0-25 percent (example: '6%%,6%%,6%%,6%%')"
+        ),
+    )
+    subtitle_group.add_argument(
+        "--subtitle-header-line-count",
+        type=int,
+        choices=(0, 1, 2),
         default=None,
         help=(
-            "subtitle vertical position (default: [ui].subtitle_position from "
-            "config.toml; bottom when unset)"
+            "number of fixed script header lines before body lines; use 0 for "
+            "normal subtitles or 2 for title and author headers"
         ),
     )
     subtitle_group.add_argument(
-        "--custom-position",
-        type=_percent_position,
-        default=None,
-        help=(
-            "custom position as percent from top, 0-100; requires "
-            "--subtitle-position custom (default: [ui].custom_position from "
-            "config.toml; 70 when unset)"
-        ),
-    )
-    subtitle_group.add_argument(
-        "--text-fore-color",
+        "--subtitle-text-color",
         type=_hex_color,
         default=None,
         help=(
-            "subtitle text color in #RRGGBB format; quote the value in shells "
-            "that treat # as a comment (default: [ui].text_fore_color from "
-            "config.toml; #FFFFFF when unset)"
+            "subtitle text color in #RRGGBB or #RRGGBBAA format; quote the "
+            "value in shells "
+            "that treat # as a comment (default: #FFFFFF when unset)"
         ),
     )
     subtitle_group.add_argument(
-        "--font-size",
+        "--subtitle-font-size",
         type=_positive_int,
         default=None,
-        help=(
-            "subtitle font size (default: [ui].font_size from config.toml; "
-            "60 when unset)"
-        ),
+        help="subtitle font size in target video pixels (default: 60)",
     )
     subtitle_group.add_argument(
-        "--stroke-color",
+        "--subtitle-stroke-color",
         type=_hex_color,
         default=None,
         help=(
-            "subtitle outline color in #RRGGBB format (default: "
-            "[ui].stroke_color from config.toml; #000000 when unset)"
+            "subtitle outline color in #RRGGBB or #RRGGBBAA format (default: #000000)"
         ),
     )
     subtitle_group.add_argument(
-        "--stroke-width",
+        "--subtitle-stroke-width",
         type=_non_negative_float,
         default=None,
-        help=(
-            "subtitle outline width, a finite number >= 0 (default: "
-            "[ui].stroke_width from config.toml; 1.5 when unset)"
-        ),
+        help="subtitle outline width, a finite number >= 0 (default: 1.5)",
     )
     subtitle_group.add_argument(
         "--subtitle-background-enabled",
@@ -517,19 +554,18 @@ Batch manifests:
         type=_hex_color,
         default=None,
         help=(
-            "subtitle background color in #RRGGBB format (default: "
-            "[ui].subtitle_background_color from config.toml)"
+            "subtitle background color in #RRGGBB or #RRGGBBAA format "
+            "(default: [ui].subtitle_background_color from config.toml)"
         ),
     )
     subtitle_group.add_argument(
-        "--rounded-subtitle-background",
+        "--subtitle-background-style",
+        choices=[
+            "rectangle",
+            "rounded_translucent",
+        ],
         default=None,
-        action=argparse.BooleanOptionalAction,
-        help=(
-            "use a rounded subtitle background (default: "
-            "[ui].rounded_subtitle_background from config.toml; "
-            "disabled when unset)"
-        ),
+        help=("subtitle background style (default: rectangle when unset)"),
     )
 
     execution_group = parser.add_argument_group("execution")
@@ -603,12 +639,6 @@ Batch manifests:
                 "--sonilo-bgm-prompt can only be combined with --bgm-type sonilo"
             )
 
-    if (
-        not args.batch_file
-        and args.custom_position is not None
-        and args.subtitle_position != "custom"
-    ):
-        parser.error("--custom-position requires --subtitle-position custom")
     # 只有显式的 --no-subtitle-enabled 才算冲突。默认值现在是 None，
     # 保存的关闭状态在 build_video_params 中处理，不应在这里报参数错误。
     if (
@@ -617,12 +647,13 @@ Batch manifests:
         and args.subtitle_enabled is False
     ):
         parser.error("--stop-at subtitle cannot be combined with --no-subtitle-enabled")
-    if not args.batch_file and args.subtitle_background_enabled is False and (
-        args.subtitle_background_color is not None
-        or args.rounded_subtitle_background is True
+    if (
+        not args.batch_file
+        and args.subtitle_background_enabled is False
+        and (args.subtitle_background_color is not None)
     ):
         parser.error(
-            "subtitle background color or rounding cannot be enabled together with "
+            "subtitle background color cannot be enabled together with "
             "--no-subtitle-background-enabled"
         )
 
@@ -752,14 +783,16 @@ def build_video_params(args: argparse.Namespace) -> VideoParams:
         "bgm_file",
         "bgm_volume",
         "sonilo_bgm_prompt",
-        "font_name",
-        "subtitle_position",
-        "custom_position",
-        "text_fore_color",
-        "font_size",
-        "stroke_color",
-        "stroke_width",
-        "rounded_subtitle_background",
+        "subtitle_font",
+        "subtitle_direction",
+        "subtitle_show_mode",
+        "subtitle_align_h",
+        "subtitle_align_v",
+        "subtitle_header_line_count",
+        "subtitle_text_color",
+        "subtitle_font_size",
+        "subtitle_stroke_color",
+        "subtitle_stroke_width",
     ]
     for name in optional_arg_names:
         value = getattr(args, name)
@@ -770,14 +803,18 @@ def build_video_params(args: argparse.Namespace) -> VideoParams:
     # 设置的字段；若保存值缺失，则继续沿用 VideoParams 的默认值。
     ui_defaults = (
         ("video_fit_mode", str, _video_fit_mode),
-        ("font_name", str, None),
-        ("text_fore_color", str, _hex_color),
-        ("font_size", int, _positive_int),
-        ("rounded_subtitle_background", bool, None),
+        ("subtitle_font", str, None),
+        ("subtitle_direction", str, None),
+        ("subtitle_show_mode", str, None),
+        ("subtitle_align_h", str, None),
+        ("subtitle_align_v", str, None),
+        ("subtitle_header_line_count", int, None),
+        ("subtitle_text_color", str, _hex_color),
+        ("subtitle_font_size", int, _positive_int),
+        ("subtitle_stroke_color", str, _hex_color),
+        ("subtitle_stroke_width", float, _non_negative_float),
         ("voice_volume", float, _non_negative_float),
         ("voice_rate", float, _positive_float),
-        ("stroke_color", str, _hex_color),
-        ("stroke_width", float, _non_negative_float),
     )
     for name, expected_type, checker in ui_defaults:
         if name in params_kwargs:
@@ -786,53 +823,52 @@ def build_video_params(args: argparse.Namespace) -> VideoParams:
         if value is not None:
             params_kwargs[name] = value
 
-    # 字幕位置必须由 CLI 给出确定值，不能交给上面说明的导入期字段默认值。
-    if "subtitle_position" not in params_kwargs:
-        params_kwargs["subtitle_position"] = (
-            _ui_config_value(ui_config, "subtitle_position", str, _subtitle_position)
-            or DEFAULT_SUBTITLE_POSITION
-        )
-    if "custom_position" not in params_kwargs:
-        saved_custom_position = _ui_config_value(
-            ui_config, "custom_position", float, _percent_position
-        )
-        params_kwargs["custom_position"] = (
-            DEFAULT_CUSTOM_POSITION
-            if saved_custom_position is None
-            else saved_custom_position
-        )
+    for name in (
+        "subtitle_margin_top",
+        "subtitle_margin_right",
+        "subtitle_margin_bottom",
+        "subtitle_margin_left",
+    ):
+        if name not in params_kwargs:
+            value = _ui_config_value(ui_config, name, float, _margin_percent)
+            if value is not None:
+                params_kwargs[name] = value
+    if args.subtitle_margin is not None:
+        (
+            params_kwargs["subtitle_margin_top"],
+            params_kwargs["subtitle_margin_right"],
+            params_kwargs["subtitle_margin_bottom"],
+            params_kwargs["subtitle_margin_left"],
+        ) = args.subtitle_margin
 
-    if args.subtitle_background_enabled is False:
-        params_kwargs["text_background_color"] = False
-        params_kwargs["rounded_subtitle_background"] = False
-    elif args.subtitle_background_color is not None:
-        params_kwargs["text_background_color"] = args.subtitle_background_color
-    elif args.subtitle_background_enabled is True:
-        # 用户只开启了背景而没有覆盖颜色，因此优先沿用 WebUI 保存的颜色，
-        # 只有在没有可用保存值时才回退到默认背景。
-        params_kwargs["text_background_color"] = (
-            _ui_config_value(
-                ui_config, "subtitle_background_color", str, _hex_color
-            )
-            or True
-        )
+    if args.subtitle_background_enabled is not None:
+        params_kwargs["subtitle_background_enabled"] = args.subtitle_background_enabled
     else:
-        # “关闭背景”加上颜色作为命令行组合是参数错误；但作为保存的设置，
-        # 同样的组合不应中断运行，只表示禁用背景。
-        ui_enabled = _ui_config_value(
-            ui_config, "subtitle_background_enabled", bool
+        saved_background_enabled = _ui_config_value(
+            ui_config, "subtitle_background_enabled", bool, None
         )
-        ui_color = _ui_config_value(
+        if saved_background_enabled is not None:
+            params_kwargs["subtitle_background_enabled"] = saved_background_enabled
+
+    if args.subtitle_background_color is not None:
+        params_kwargs["subtitle_background_color"] = args.subtitle_background_color
+    elif params_kwargs.get("subtitle_background_enabled", False):
+        saved_background_color = _ui_config_value(
             ui_config, "subtitle_background_color", str, _hex_color
         )
-        if ui_enabled is False:
-            params_kwargs["text_background_color"] = False
-            if args.rounded_subtitle_background is None:
-                params_kwargs["rounded_subtitle_background"] = False
-        elif ui_color is not None:
-            params_kwargs["text_background_color"] = ui_color
-        elif ui_enabled is True:
-            params_kwargs["text_background_color"] = True
+        if saved_background_color is not None:
+            params_kwargs["subtitle_background_color"] = saved_background_color
+    else:
+        params_kwargs.setdefault("subtitle_background_color", "#000000")
+
+    if args.subtitle_background_style is not None:
+        params_kwargs["subtitle_background_style"] = args.subtitle_background_style
+    else:
+        saved_background_style = _ui_config_value(
+            ui_config, "subtitle_background_style", str, None
+        )
+        if saved_background_style is not None:
+            params_kwargs["subtitle_background_style"] = saved_background_style
 
     return VideoParams(**params_kwargs)
 
@@ -962,7 +998,6 @@ def _validate_batch_task_params(
     params: VideoParams,
     *,
     stop_at: str,
-    custom_position_is_explicit: bool,
     seedance_charge_confirmed: bool,
 ) -> None:
     if not params.video_subject.strip() and not params.video_script.strip():
@@ -989,9 +1024,7 @@ def _validate_batch_task_params(
         if value is None:
             raise ValueError(f"{field_name} cannot be null")
     if params.video_source == "local" and stop_at == "terms":
-        raise ValueError(
-            "stop_at=terms has no effect with video_source=local"
-        )
+        raise ValueError("stop_at=terms has no effect with video_source=local")
     if (
         params.video_source == "local"
         and stop_at in {"materials", "video"}
@@ -1014,42 +1047,27 @@ def _validate_batch_task_params(
 
     if stop_at == "subtitle" and not params.subtitle_enabled:
         raise ValueError("stop_at=subtitle cannot be combined with disabled subtitles")
-    if params.subtitle_position not in {"top", "center", "bottom", "custom"}:
-        raise ValueError(
-            "subtitle_position must be one of: top, center, bottom, custom"
-        )
-    if custom_position_is_explicit and params.subtitle_position != "custom":
-        raise ValueError("custom_position requires subtitle_position=custom")
-    if not math.isfinite(params.custom_position) or not 0 <= params.custom_position <= 100:
-        raise ValueError("custom_position must be a finite number between 0 and 100")
     if params.video_clip_speed is not None and (
         not math.isfinite(params.video_clip_speed)
         or not 0.5 <= params.video_clip_speed <= 2.0
     ):
         raise ValueError("video_clip_speed must be a finite number between 0.5 and 2.0")
-    if params.text_background_color is False and params.rounded_subtitle_background:
-        raise ValueError(
-            "rounded_subtitle_background requires an enabled subtitle background"
-        )
-
     color_values = {
-        "text_fore_color": params.text_fore_color,
-        "stroke_color": params.stroke_color,
-        "text_background_color": (
-            params.text_background_color
-            if isinstance(params.text_background_color, str)
-            else None
-        ),
+        "subtitle_text_color": params.subtitle_text_color,
+        "subtitle_stroke_color": params.subtitle_stroke_color,
+        "subtitle_background_color": params.subtitle_background_color,
     }
     for name, value in color_values.items():
-        if value is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
-            raise ValueError(f"{name} must use #RRGGBB format")
+        if value is not None and not re.fullmatch(
+            r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", value
+        ):
+            raise ValueError(f"{name} must use #RRGGBB or #RRGGBBAA format")
 
     numeric_constraints = (
         ("voice_volume", params.voice_volume, 0, False),
         ("voice_rate", params.voice_rate, 0, True),
         ("bgm_volume", params.bgm_volume, 0, False),
-        ("stroke_width", params.stroke_width, 0, False),
+        ("subtitle_stroke_width", params.subtitle_stroke_width, 0, False),
     )
     for name, value, minimum, exclusive in numeric_constraints:
         if value is None:
@@ -1062,7 +1080,7 @@ def _validate_batch_task_params(
 
     for name, value in (
         ("n_threads", params.n_threads),
-        ("font_size", params.font_size),
+        ("subtitle_font_size", params.subtitle_font_size),
     ):
         if value is not None and value < 1:
             raise ValueError(f"{name} must be >= 1")
@@ -1094,9 +1112,7 @@ def _build_batch_tasks(args: argparse.Namespace) -> list[VideoParams]:
             allowed_fields=allowed_fields,
         )
         try:
-            params = VideoParams.model_validate(
-                {**copy.deepcopy(base_values), **entry}
-            )
+            params = VideoParams.model_validate({**copy.deepcopy(base_values), **entry})
             override_fields = set(entry)
             _resolve_batch_entry_paths(
                 params,
@@ -1106,10 +1122,6 @@ def _build_batch_tasks(args: argparse.Namespace) -> list[VideoParams]:
             _validate_batch_task_params(
                 params,
                 stop_at=args.stop_at,
-                custom_position_is_explicit=(
-                    args.custom_position is not None
-                    or "custom_position" in override_fields
-                ),
                 seedance_charge_confirmed=args.confirm_seedance_charge,
             )
         except (TypeError, ValueError) as exc:
@@ -1168,7 +1180,11 @@ def _resolve_cli_file(
         else os.path.join(os.getcwd(), expanded_path)
     )
     resolved_path = os.path.realpath(candidate)
-    if not os.path.isfile(resolved_path) and fallback_dir and not os.path.isabs(expanded_path):
+    if (
+        not os.path.isfile(resolved_path)
+        and fallback_dir
+        and not os.path.isabs(expanded_path)
+    ):
         resolved_path = os.path.realpath(os.path.join(fallback_dir, expanded_path))
 
     if not os.path.isfile(resolved_path):
@@ -1210,9 +1226,7 @@ def _resolve_managed_resource_file(
             resolved_path, resource_dir
         ):
             return resolved_path
-    raise ValueError(
-        f"{description} file must exist inside {resource_dir}: {raw_path}"
-    )
+    raise ValueError(f"{description} file must exist inside {resource_dir}: {raw_path}")
 
 
 def _validate_cli_files(
@@ -1272,25 +1286,23 @@ def _validate_cli_files(
                 # 维护白名单。
                 params.bgm_file = bgm_service.resolve_bgm_file(params.bgm_file)
             except ValueError as exc:
-                supported_extensions = ", ".join(
-                    bgm_service.SUPPORTED_BGM_EXTENSIONS
-                )
+                supported_extensions = ", ".join(bgm_service.SUPPORTED_BGM_EXTENSIONS)
                 raise ValueError(
                     "background music must be a supported audio file inside "
                     f"storage/bgm or resource/songs ({supported_extensions}): "
                     f"{params.bgm_file}"
                 ) from exc
 
-    if params.subtitle_enabled and params.font_name and stop_at == "video":
+    if params.subtitle_enabled and params.subtitle_font and stop_at == "video":
         font_path = _resolve_managed_resource_file(
-            params.font_name,
+            params.subtitle_font,
             resource_dir=utils.font_dir(),
             description="subtitle font",
         )
         if not font_path.lower().endswith((".ttf", ".ttc")):
             raise ValueError("subtitle font must use the .ttf or .ttc extension")
         # 下游根据 resource/fonts 内的文件名拼接路径，因此仍保留纯文件名。
-        params.font_name = os.path.basename(font_path)
+        params.subtitle_font = os.path.basename(font_path)
 
     if params.video_source != "local" or stop_at not in {"materials", "video"}:
         return "", []
@@ -1323,8 +1335,7 @@ def _remove_cli_material_copies(created_paths: Sequence[str]) -> None:
                 os.remove(file_path)
         except OSError as exc:
             logger.warning(
-                f"failed to remove prepared CLI material: path={file_path}, "
-                f"error={exc}"
+                f"failed to remove prepared CLI material: path={file_path}, error={exc}"
             )
 
 

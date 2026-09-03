@@ -87,9 +87,11 @@ class TestCli(unittest.TestCase):
         self.assertEqual(params.video_terms, ["foo", "bar"])
 
     def test_run_cli_dispatches_task_start(self):
-        with patch("app.services.task.start", return_value={"script": "ok"}) as start, patch(
-            "app.utils.utils.get_uuid", return_value="task-123"
-        ), patch("builtins.print") as print_mock:
+        with (
+            patch("app.services.task.start", return_value={"script": "ok"}) as start,
+            patch("app.utils.utils.get_uuid", return_value="task-123"),
+            patch("builtins.print") as print_mock,
+        ):
             code = cli.run_cli(["--video-subject", "命令行测试", "--stop-at", "script"])
 
         self.assertEqual(code, 0)
@@ -139,9 +141,11 @@ class TestCli(unittest.TestCase):
         self.assertEqual(payload["result"], result)
 
     def test_run_cli_returns_error_when_task_fails(self):
-        with patch("app.services.task.start", return_value=None), patch(
-            "app.utils.utils.get_uuid", return_value="task-456"
-        ), patch.object(cli.logger, "error") as log_error:
+        with (
+            patch("app.services.task.start", return_value=None),
+            patch("app.utils.utils.get_uuid", return_value="task-456"),
+            patch.object(cli.logger, "error") as log_error,
+        ):
             code = cli.run_cli(["--video-subject", "失败场景"])
 
         self.assertEqual(code, 1)
@@ -157,11 +161,12 @@ class TestCli(unittest.TestCase):
             "error": "TTS request timed out",
         }
 
-        with patch("app.services.task.start", return_value=failure), patch(
-            "app.utils.utils.get_uuid", return_value="task-structured-failure"
-        ), patch.object(cli.logger, "error") as log_error, patch(
-            "builtins.print"
-        ) as print_mock:
+        with (
+            patch("app.services.task.start", return_value=failure),
+            patch("app.utils.utils.get_uuid", return_value="task-structured-failure"),
+            patch.object(cli.logger, "error") as log_error,
+            patch("builtins.print") as print_mock,
+        ):
             code = cli.run_cli(["--video-subject", "失败场景"])
 
         self.assertEqual(code, 1)
@@ -304,7 +309,9 @@ class TestCli(unittest.TestCase):
         self.assertEqual(params.video_language, "en")
         self.assertEqual(params.paragraph_number, 3)
         self.assertEqual(params.video_script_prompt, "use a lighter tone")
-        self.assertEqual(params.custom_system_prompt, "write concise short-form scripts")
+        self.assertEqual(
+            params.custom_system_prompt, "write concise short-form scripts"
+        )
         self.assertEqual(params.video_concat_mode, "sequential")
         self.assertEqual(params.video_transition_mode, "FadeIn")
         self.assertEqual(params.video_clip_duration, 4)
@@ -329,51 +336,80 @@ class TestCli(unittest.TestCase):
 
         self.assertEqual(params.custom_audio_file, "voiceover.mp3")
 
-    def test_build_video_params_with_subtitle_style_options(self):
+    def test_build_video_params_with_subtitle_options(self):
         args = cli.parse_args(
             [
                 "--video-subject",
                 "test",
-                "--font-name",
+                "--subtitle-font",
                 "MicrosoftYaHeiBold.ttc",
-                "--subtitle-position",
-                "custom",
-                "--custom-position",
-                "42.5",
-                "--text-fore-color",
+                "--subtitle-direction",
+                "vertical_rtl",
+                "--subtitle-show-mode",
+                "scroll",
+                "--subtitle-align-h",
+                "right",
+                "--subtitle-align-v",
+                "top",
+                "--subtitle-margin",
+                "2%,3%,4%,5%",
+                "--subtitle-header-line-count",
+                "2",
+                "--subtitle-text-color",
                 "#AABBCC",
-                "--font-size",
+                "--subtitle-font-size",
                 "72",
-                "--stroke-color",
+                "--subtitle-stroke-color",
                 "#112233",
-                "--stroke-width",
+                "--subtitle-stroke-width",
                 "2.5",
                 "--subtitle-background-color",
                 "#000001",
-                "--rounded-subtitle-background",
+                "--subtitle-background-style",
+                "rounded_translucent",
             ]
         )
 
         params = cli.build_video_params(args)
 
-        self.assertEqual(params.font_name, "MicrosoftYaHeiBold.ttc")
-        self.assertEqual(params.subtitle_position, "custom")
-        self.assertEqual(params.custom_position, 42.5)
-        self.assertEqual(params.text_fore_color, "#AABBCC")
-        self.assertEqual(params.font_size, 72)
-        self.assertEqual(params.stroke_color, "#112233")
-        self.assertEqual(params.stroke_width, 2.5)
-        self.assertEqual(params.text_background_color, "#000001")
-        self.assertTrue(params.rounded_subtitle_background)
+        self.assertEqual(params.subtitle_font, "MicrosoftYaHeiBold.ttc")
+        self.assertEqual(params.subtitle_direction, "vertical_rtl")
+        self.assertEqual(params.subtitle_show_mode, "scroll")
+        self.assertEqual(params.subtitle_align_h, "right")
+        self.assertEqual(params.subtitle_align_v, "top")
+        self.assertEqual(params.subtitle_margin_top, 2.0)
+        self.assertEqual(params.subtitle_margin_right, 3.0)
+        self.assertEqual(params.subtitle_margin_bottom, 4.0)
+        self.assertEqual(params.subtitle_margin_left, 5.0)
+        self.assertEqual(params.subtitle_header_line_count, 2)
+        self.assertEqual(params.subtitle_text_color, "#AABBCC")
+        self.assertEqual(params.subtitle_font_size, 72)
+        self.assertEqual(params.subtitle_stroke_color, "#112233")
+        self.assertEqual(params.subtitle_stroke_width, 2.5)
+        self.assertFalse(params.subtitle_background_enabled)
+        self.assertEqual(params.subtitle_background_color, "#000001")
+        self.assertEqual(
+            params.subtitle_background_style,
+            "rounded_translucent",
+        )
 
-    def test_disabled_subtitle_background_rejects_rounding(self):
+    def test_disabled_subtitle_background_is_valid_without_color(self):
+        args = cli.parse_args(
+            ["--video-subject", "test", "--no-subtitle-background-enabled"]
+        )
+        params = cli.build_video_params(args)
+
+        self.assertFalse(params.subtitle_background_enabled)
+
+    def test_disabled_subtitle_background_rejects_color(self):
         with self.assertRaises(SystemExit) as cm:
             cli.parse_args(
                 [
                     "--video-subject",
                     "test",
                     "--no-subtitle-background-enabled",
-                    "--rounded-subtitle-background",
+                    "--subtitle-background-color",
+                    "#123456",
                 ]
             )
 
@@ -411,6 +447,7 @@ class TestCli(unittest.TestCase):
         # We need a real video file; use a tiny one via moviepy
         try:
             from moviepy import ColorClip
+
             clip = ColorClip(size=(640, 640), color=(0, 0, 0), duration=1)
             clip.write_videofile(test_filepath, fps=1, logger=None)
             clip.close()
@@ -420,7 +457,9 @@ class TestCli(unittest.TestCase):
         try:
             materials = [MaterialInfo(provider="local", url=test_filename, duration=0)]
             result = vd.preprocess_video(materials=materials, clip_duration=4)
-            self.assertTrue(len(result) > 0, "preprocess_video should return valid materials")
+            self.assertTrue(
+                len(result) > 0, "preprocess_video should return valid materials"
+            )
             self.assertTrue(
                 os.path.isabs(result[0].url),
                 f"material url should be absolute path, got: {result[0].url}",
@@ -429,7 +468,6 @@ class TestCli(unittest.TestCase):
         finally:
             if os.path.exists(test_filepath):
                 os.remove(test_filepath)
-
 
     def test_local_source_requires_video_materials(self):
         with self.assertRaises(SystemExit) as cm:
@@ -453,12 +491,18 @@ class TestCli(unittest.TestCase):
 
     def test_local_source_stop_at_terms_rejected(self):
         with self.assertRaises(SystemExit) as cm:
-            cli.parse_args([
-                "--video-subject", "test",
-                "--video-source", "local",
-                "--video-materials", "a.mp4",
-                "--stop-at", "terms",
-            ])
+            cli.parse_args(
+                [
+                    "--video-subject",
+                    "test",
+                    "--video-source",
+                    "local",
+                    "--video-materials",
+                    "a.mp4",
+                    "--stop-at",
+                    "terms",
+                ]
+            )
         self.assertNotEqual(cm.exception.code, 0)
 
     def test_video_materials_rejected_for_online_source(self):
@@ -591,7 +635,7 @@ class TestCli(unittest.TestCase):
     def test_invalid_aspect_and_non_finite_numbers_are_argument_errors(self):
         invalid_argvs = [
             ["--video-subject", "test", "--video-aspect", "invalid"],
-            ["--video-subject", "test", "--custom-position", "nan"],
+            ["--video-subject", "test", "--subtitle-margin", "nan,1,2,3"],
             ["--video-subject", "test", "--voice-rate", "inf"],
         ]
         for argv in invalid_argvs:
@@ -599,25 +643,19 @@ class TestCli(unittest.TestCase):
                 cli.parse_args(argv)
             self.assertEqual(cm.exception.code, 2)
 
-    def test_custom_position_requires_custom_subtitle_position(self):
+    def test_invalid_subtitle_margin_rejects_wrong_count(self):
         with self.assertRaises(SystemExit) as cm:
-            cli.parse_args(
-                ["--video-subject", "test", "--custom-position", "50"]
-            )
+            cli.parse_args(["--video-subject", "test", "--subtitle-margin", "1,2,3"])
 
         self.assertEqual(cm.exception.code, 2)
 
     def test_task_id_must_be_uuid(self):
         task_id = str(uuid4())
-        args = cli.parse_args(
-            ["--video-subject", "test", "--task-id", task_id]
-        )
+        args = cli.parse_args(["--video-subject", "test", "--task-id", task_id])
         self.assertEqual(args.task_id, task_id)
 
         with self.assertRaises(SystemExit) as cm:
-            cli.parse_args(
-                ["--video-subject", "test", "--task-id", "../../escape"]
-            )
+            cli.parse_args(["--video-subject", "test", "--task-id", "../../escape"])
         self.assertEqual(cm.exception.code, 2)
 
     def test_prepare_cli_files_accepts_relative_and_absolute_materials(self):
@@ -649,7 +687,9 @@ class TestCli(unittest.TestCase):
                 os.chdir(old_cwd)
 
             prepared_paths = [Path(item.url) for item in params.video_materials]
-            self.assertTrue(all(path.parent == Path(managed_dir) for path in prepared_paths))
+            self.assertTrue(
+                all(path.parent == Path(managed_dir) for path in prepared_paths)
+            )
             self.assertEqual(
                 {path.read_bytes() for path in prepared_paths},
                 {b"relative-video", b"absolute-image"},
@@ -668,8 +708,9 @@ class TestCli(unittest.TestCase):
         )
         params = cli.build_video_params(args)
 
-        with tempfile.TemporaryDirectory() as managed_dir, patch(
-            "app.utils.utils.storage_dir", return_value=managed_dir
+        with (
+            tempfile.TemporaryDirectory() as managed_dir,
+            patch("app.utils.utils.storage_dir", return_value=managed_dir),
         ):
             with self.assertRaisesRegex(ValueError, "does not exist"):
                 cli.prepare_cli_files(params, stop_at="video")
@@ -714,7 +755,9 @@ class TestCli(unittest.TestCase):
 
             self.assertEqual(params.custom_audio_file, str(audio_file.resolve()))
 
-    def test_batch_file_does_not_require_global_subject_and_conflicts_with_task_id(self):
+    def test_batch_file_does_not_require_global_subject_and_conflicts_with_task_id(
+        self,
+    ):
         args = cli.parse_args(["--batch-file", "tasks.jsonl"])
         self.assertEqual(args.batch_file, "tasks.jsonl")
 
@@ -953,7 +996,9 @@ class TestCli(unittest.TestCase):
                 )
 
             first_path = start.call_args_list[0].kwargs["params"].video_materials[0].url
-            second_path = start.call_args_list[1].kwargs["params"].video_materials[0].url
+            second_path = (
+                start.call_args_list[1].kwargs["params"].video_materials[0].url
+            )
             managed_files = os.listdir(managed_dir)
 
         self.assertEqual(code, 0)
@@ -1021,7 +1066,10 @@ class TestCli(unittest.TestCase):
             ],
         )
         for payload in invalid_manifests:
-            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                self.subTest(payload=payload),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
                 manifest = Path(temp_dir) / "tasks.json"
                 manifest.write_text(json.dumps(payload), encoding="utf-8")
                 with patch("app.services.task.start") as start:
@@ -1055,7 +1103,7 @@ class TestCli(unittest.TestCase):
                     [
                         {
                             "video_subject": "invalid color",
-                            "text_fore_color": "white",
+                            "subtitle_text_color": "white",
                         }
                     ]
                 ),
@@ -1093,7 +1141,10 @@ class TestCli(unittest.TestCase):
 
     def test_later_null_runtime_field_prevents_every_batch_task_from_starting(self):
         for field_name in ("video_aspect", "video_concat_mode"):
-            with self.subTest(field_name=field_name), tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                self.subTest(field_name=field_name),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
                 manifest = Path(temp_dir) / "tasks.json"
                 manifest.write_text(
                     json.dumps(
@@ -1325,12 +1376,16 @@ class TestCliUiDefaults(unittest.TestCase):
     """
 
     UI_CONFIG = {
-        "font_name": "MicrosoftYaHeiBold.ttc",
-        "text_fore_color": "#123456",
-        "font_size": 48,
+        "subtitle_font": "MicrosoftYaHeiBold.ttc",
+        "subtitle_direction": "vertical_rtl",
+        "subtitle_show_mode": "scroll",
+        "subtitle_align_h": "right",
+        "subtitle_align_v": "top",
+        "subtitle_text_color": "#123456",
+        "subtitle_font_size": 48,
         "subtitle_background_enabled": True,
         "subtitle_background_color": "#654321",
-        "rounded_subtitle_background": True,
+        "subtitle_background_style": "rounded_translucent",
         "voice_name": "gemini:Puck-Male",
     }
 
@@ -1340,11 +1395,19 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, self.UI_CONFIG, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.font_name, "MicrosoftYaHeiBold.ttc")
-        self.assertEqual(params.text_fore_color, "#123456")
-        self.assertEqual(params.font_size, 48)
-        self.assertEqual(params.text_background_color, "#654321")
-        self.assertTrue(params.rounded_subtitle_background)
+        self.assertEqual(params.subtitle_font, "MicrosoftYaHeiBold.ttc")
+        self.assertEqual(params.subtitle_direction, "vertical_rtl")
+        self.assertEqual(params.subtitle_show_mode, "scroll")
+        self.assertEqual(params.subtitle_align_h, "right")
+        self.assertEqual(params.subtitle_align_v, "top")
+        self.assertEqual(params.subtitle_text_color, "#123456")
+        self.assertEqual(params.subtitle_font_size, 48)
+        self.assertEqual(params.subtitle_background_color, "#654321")
+        self.assertTrue(params.subtitle_background_enabled)
+        self.assertEqual(
+            params.subtitle_background_style,
+            "rounded_translucent",
+        )
 
     def test_ui_config_supplies_voice_name(self):
         args = cli.parse_args(["--video-subject", "test"])
@@ -1359,26 +1422,38 @@ class TestCliUiDefaults(unittest.TestCase):
             [
                 "--video-subject",
                 "test",
-                "--font-name",
+                "--subtitle-font",
                 "STHeitiLight.ttc",
-                "--text-fore-color",
+                "--subtitle-text-color",
                 "#AABBCC",
-                "--font-size",
+                "--subtitle-font-size",
                 "72",
+                "--subtitle-direction",
+                "horizontal",
+                "--subtitle-show-mode",
+                "sentence",
+                "--subtitle-align-h",
+                "left",
+                "--subtitle-align-v",
+                "bottom",
                 "--voice-name",
                 "no-voice",
-                "--no-rounded-subtitle-background",
+                "--no-subtitle-background-enabled",
             ]
         )
 
         with patch.dict(app_config.ui, self.UI_CONFIG, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.font_name, "STHeitiLight.ttc")
-        self.assertEqual(params.text_fore_color, "#AABBCC")
-        self.assertEqual(params.font_size, 72)
+        self.assertEqual(params.subtitle_font, "STHeitiLight.ttc")
+        self.assertEqual(params.subtitle_text_color, "#AABBCC")
+        self.assertEqual(params.subtitle_font_size, 72)
+        self.assertEqual(params.subtitle_direction, "horizontal")
+        self.assertEqual(params.subtitle_show_mode, "sentence")
+        self.assertEqual(params.subtitle_align_h, "left")
+        self.assertEqual(params.subtitle_align_v, "bottom")
         self.assertEqual(params.voice_name, "no-voice")
-        self.assertFalse(params.rounded_subtitle_background)
+        self.assertFalse(params.subtitle_background_enabled)
 
     def test_builtin_defaults_apply_when_ui_config_is_empty(self):
         args = cli.parse_args(["--video-subject", "test"])
@@ -1386,11 +1461,15 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, {}, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.font_name, "STHeitiMedium.ttc")
-        self.assertEqual(params.text_fore_color, "#FFFFFF")
-        self.assertEqual(params.font_size, 60)
-        self.assertFalse(params.text_background_color)
-        self.assertFalse(params.rounded_subtitle_background)
+        self.assertEqual(params.subtitle_font, "MicrosoftYaHeiBold.ttc")
+        self.assertEqual(params.subtitle_text_color, "#FFFFFF")
+        self.assertEqual(params.subtitle_font_size, 60)
+        self.assertFalse(params.subtitle_background_enabled)
+        self.assertEqual(params.subtitle_background_color, "#000000")
+        self.assertEqual(
+            params.subtitle_background_style,
+            "rectangle",
+        )
 
     def test_ui_config_can_disable_subtitle_background(self):
         """
@@ -1406,15 +1485,14 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertFalse(params.text_background_color)
-        self.assertFalse(params.rounded_subtitle_background)
+        self.assertFalse(params.subtitle_background_enabled)
 
     def test_unusable_ui_config_values_fall_back_to_builtin_defaults(self):
         """损坏的 config.toml 不应触发 traceback。"""
         ui_config = {
-            "font_size": "sechzig",
-            "text_fore_color": 42,
-            "font_name": "",
+            "subtitle_font_size": "sechzig",
+            "subtitle_text_color": 42,
+            "subtitle_font": "",
             "voice_name": None,
         }
 
@@ -1423,9 +1501,9 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.font_size, 60)
-        self.assertEqual(params.text_fore_color, "#FFFFFF")
-        self.assertEqual(params.font_name, "STHeitiMedium.ttc")
+        self.assertEqual(params.subtitle_font_size, 60)
+        self.assertEqual(params.subtitle_text_color, "#FFFFFF")
+        self.assertEqual(params.subtitle_font, "MicrosoftYaHeiBold.ttc")
         self.assertEqual(params.voice_name, "zh-CN-XiaoxiaoNeural-Female")
 
     def test_saved_no_voice_mode_disables_tts(self):
@@ -1469,8 +1547,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_enabling_background_without_color_keeps_saved_color(self):
         """
-        只传 --subtitle-background-enabled 时用户并未覆盖颜色，应沿用 WebUI
-        保存的颜色，而不是回退成黑色背景。
+        只传 --subtitle-background-enabled 时未覆盖颜色，应沿用 WebUI
+        保存的颜色。
         """
         ui_config = {"subtitle_background_color": "#654321"}
 
@@ -1481,7 +1559,8 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.text_background_color, "#654321")
+        self.assertTrue(params.subtitle_background_enabled)
+        self.assertEqual(params.subtitle_background_color, "#654321")
 
     def test_enabling_background_falls_back_to_default_without_saved_color(self):
         """没有可用的保存颜色时，仅开启背景应回退为默认背景。"""
@@ -1492,7 +1571,8 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, {}, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertIs(params.text_background_color, True)
+        self.assertTrue(params.subtitle_background_enabled)
+        self.assertEqual(params.subtitle_background_color, "#000000")
 
     def test_explicit_background_color_overrides_saved_color(self):
         """命令行显式指定的背景颜色优先于保存值。"""
@@ -1511,7 +1591,8 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.text_background_color, "#ABCDEF")
+        self.assertTrue(params.subtitle_background_enabled)
+        self.assertEqual(params.subtitle_background_color, "#ABCDEF")
 
     def test_saved_upload_mode_disables_tts(self):
         """
@@ -1541,10 +1622,9 @@ class TestCliUiDefaults(unittest.TestCase):
 
         self.assertEqual(params.voice_name, "mimo:Female")
 
-    def test_saved_color_alone_enables_background(self):
+    def test_saved_color_alone_does_not_enable_background(self):
         """
-        WebUI 总是同时写入开关和颜色，只保存颜色属于手工编辑的配置。
-        此时保存的颜色本身就表明用户想要背景，因此按开启处理。
+        背景开关是显式契约；只保存颜色不会推断出开启状态。
         """
         ui_config = {"subtitle_background_color": "#654321"}
 
@@ -1553,15 +1633,15 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.text_background_color, "#654321")
+        self.assertFalse(params.subtitle_background_enabled)
 
     def test_ui_config_supplies_voice_and_stroke_defaults(self):
         """配音音量、语速、描边和字幕开关同样保存在 [ui] 中，需要一并沿用。"""
         ui_config = {
             "voice_volume": 0.5,
             "voice_rate": 1.3,
-            "stroke_color": "#112233",
-            "stroke_width": 2.5,
+            "subtitle_stroke_color": "#112233",
+            "subtitle_stroke_width": 2.5,
             "subtitle_enabled": False,
         }
 
@@ -1572,8 +1652,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
         self.assertEqual(params.voice_volume, 0.5)
         self.assertEqual(params.voice_rate, 1.3)
-        self.assertEqual(params.stroke_color, "#112233")
-        self.assertEqual(params.stroke_width, 2.5)
+        self.assertEqual(params.subtitle_stroke_color, "#112233")
+        self.assertEqual(params.subtitle_stroke_width, 2.5)
         self.assertFalse(params.subtitle_enabled)
 
     def test_cli_flags_take_precedence_over_saved_voice_and_stroke(self):
@@ -1581,8 +1661,8 @@ class TestCliUiDefaults(unittest.TestCase):
         ui_config = {
             "voice_volume": 0.5,
             "voice_rate": 1.3,
-            "stroke_color": "#112233",
-            "stroke_width": 2.5,
+            "subtitle_stroke_color": "#112233",
+            "subtitle_stroke_width": 2.5,
             "subtitle_enabled": False,
         }
 
@@ -1594,9 +1674,9 @@ class TestCliUiDefaults(unittest.TestCase):
                 "0.9",
                 "--voice-rate",
                 "1.1",
-                "--stroke-color",
+                "--subtitle-stroke-color",
                 "#AABBCC",
-                "--stroke-width",
+                "--subtitle-stroke-width",
                 "3.5",
                 "--subtitle-enabled",
             ]
@@ -1607,13 +1687,17 @@ class TestCliUiDefaults(unittest.TestCase):
 
         self.assertEqual(params.voice_volume, 0.9)
         self.assertEqual(params.voice_rate, 1.1)
-        self.assertEqual(params.stroke_color, "#AABBCC")
-        self.assertEqual(params.stroke_width, 3.5)
+        self.assertEqual(params.subtitle_stroke_color, "#AABBCC")
+        self.assertEqual(params.subtitle_stroke_width, 3.5)
         self.assertTrue(params.subtitle_enabled)
 
     def test_saved_integers_are_accepted_for_float_fields(self):
         """TOML 中的整数同样是合法音量和语速，应转换后使用而不是丢弃。"""
-        ui_config = {"voice_volume": 1, "voice_rate": 2, "stroke_width": 3}
+        ui_config = {
+            "voice_volume": 1,
+            "voice_rate": 2,
+            "subtitle_stroke_width": 3,
+        }
 
         args = cli.parse_args(["--video-subject", "test"])
 
@@ -1622,19 +1706,19 @@ class TestCliUiDefaults(unittest.TestCase):
 
         self.assertEqual(params.voice_volume, 1.0)
         self.assertEqual(params.voice_rate, 2.0)
-        self.assertEqual(params.stroke_width, 3.0)
+        self.assertEqual(params.subtitle_stroke_width, 3.0)
 
     def test_saved_values_out_of_range_fall_back_to_builtin_defaults(self):
         """
         保存值按与命令行相同的规则校验：音量不可为负、语速必须为正、
-        颜色必须是 #RRGGBB。不合法的值回退到内置默认值。
+        颜色必须是 #RRGGBB 或 #RRGGBBAA。不合法的值回退到内置默认值。
         """
         ui_config = {
             "voice_volume": -1.0,
             "voice_rate": 0,
-            "stroke_color": "notacolor",
-            "stroke_width": -2.0,
-            "font_size": 0,
+            "subtitle_stroke_color": "notacolor",
+            "subtitle_stroke_width": -2.0,
+            "subtitle_font_size": 0,
         }
 
         args = cli.parse_args(["--video-subject", "test"])
@@ -1644,9 +1728,9 @@ class TestCliUiDefaults(unittest.TestCase):
 
         self.assertEqual(params.voice_volume, 1.0)
         self.assertEqual(params.voice_rate, 1.0)
-        self.assertEqual(params.stroke_color, "#000000")
-        self.assertEqual(params.stroke_width, 1.5)
-        self.assertEqual(params.font_size, 60)
+        self.assertEqual(params.subtitle_stroke_color, "#000000")
+        self.assertEqual(params.subtitle_stroke_width, 1.5)
+        self.assertEqual(params.subtitle_font_size, 60)
 
     def test_stop_at_subtitle_overrides_saved_subtitle_disabled(self):
         """
@@ -1655,9 +1739,7 @@ class TestCliUiDefaults(unittest.TestCase):
         """
         ui_config = {"subtitle_enabled": False}
 
-        args = cli.parse_args(
-            ["--video-subject", "test", "--stop-at", "subtitle"]
-        )
+        args = cli.parse_args(["--video-subject", "test", "--stop-at", "subtitle"])
 
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
@@ -1679,32 +1761,39 @@ class TestCliUiDefaults(unittest.TestCase):
 
         self.assertEqual(cm.exception.code, 2)
 
-    def test_saved_subtitle_position_is_validated_and_applied(self):
-        """
-        字幕位置此前只依赖 VideoParams 的字段默认值，该默认值在模块导入时
-        求值一次，既无法校验也无法在测试中替换。现在与其它字段一样显式解析。
-        """
-        ui_config = {"subtitle_position": "custom", "custom_position": 42.5}
+    def test_saved_subtitle_margins_are_validated_and_applied(self):
+        """保存的结构化字幕边距按新契约解析。"""
+        ui_config = {
+            "subtitle_margin_top": 1,
+            "subtitle_margin_right": 2,
+            "subtitle_margin_bottom": 3,
+            "subtitle_margin_left": 4,
+        }
 
         args = cli.parse_args(["--video-subject", "test"])
 
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.subtitle_position, "custom")
-        self.assertEqual(params.custom_position, 42.5)
+        self.assertEqual(params.subtitle_margin_top, 1.0)
+        self.assertEqual(params.subtitle_margin_right, 2.0)
+        self.assertEqual(params.subtitle_margin_bottom, 3.0)
+        self.assertEqual(params.subtitle_margin_left, 4.0)
 
-    def test_unusable_saved_subtitle_position_falls_back(self):
-        """超出取值范围的保存位置回退到内置默认值。"""
-        ui_config = {"subtitle_position": "diagonal", "custom_position": 150.0}
+    def test_unusable_saved_subtitle_margins_fall_back(self):
+        """超出取值范围的单边保存值回退到内置默认值。"""
+        ui_config = {
+            "subtitle_margin_top": 30.0,
+            "subtitle_margin_right": "bad",
+        }
 
         args = cli.parse_args(["--video-subject", "test"])
 
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.subtitle_position, "bottom")
-        self.assertEqual(params.custom_position, 70.0)
+        self.assertEqual(params.subtitle_margin_top, 6.0)
+        self.assertEqual(params.subtitle_margin_right, 6.0)
 
     def test_invalid_saved_background_color_with_saved_enable_flag(self):
         """
@@ -1722,7 +1811,8 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertIs(params.text_background_color, True)
+        self.assertTrue(params.subtitle_background_enabled)
+        self.assertEqual(params.subtitle_background_color, "#000000")
 
     def test_invalid_saved_background_color_with_explicit_enable_flag(self):
         """显式开启背景时，非法的保存颜色同样回退到默认背景。"""
@@ -1735,7 +1825,8 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertIs(params.text_background_color, True)
+        self.assertTrue(params.subtitle_background_enabled)
+        self.assertEqual(params.subtitle_background_color, "#000000")
 
     def test_invalid_saved_background_color_without_enable_flag(self):
         """
@@ -1749,7 +1840,8 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, ui_config, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertFalse(params.text_background_color)
+        self.assertFalse(params.subtitle_background_enabled)
+        self.assertEqual(params.subtitle_background_color, "#000000")
 
 
 if __name__ == "__main__":
